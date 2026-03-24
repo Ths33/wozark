@@ -1,0 +1,8 @@
+# Subprojects have their own git repos
+wbot-ruth/
+wbot-wendy/
+wbot-marty/
+wbot-jonah/
+
+# Local settings (may contain secrets)
+.claude/settings.local.json
