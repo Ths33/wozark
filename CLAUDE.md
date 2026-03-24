@@ -7,7 +7,7 @@
 
 ## Project
 
-Wozark is a weather temperature auto-trading system for Polymarket. It consists of 3 independent projects that work together to capture weather data, make trading decisions, and provide a real-time operations dashboard.
+Wozark is a weather temperature auto-trading system for Polymarket. It consists of 4 projects (3 deployed + 1 awaiting deploy) that work together to capture weather data, predict daily highs, make trading decisions, and provide a real-time operations dashboard.
 
 **CapRover panel:** https://captain.wozark.com/
 **VPS IP:** 168.231.70.56 (East Coast)
@@ -15,23 +15,24 @@ Wozark is a weather temperature auto-trading system for Polymarket. It consists 
 ## Architecture
 
 ```
-Ruth (Rust/Axum)       Wendy (TypeScript/Fastify)      Marty (React/Vite)
-Sensor                 Brain                            Dashboard
-├─ METAR 3s poll       ├─ Threshold detection           ├─ Station cards
-├─ PWS 60s poll        ├─ Trading guards                ├─ Positions + P&L
-└─ POST raw → Wendy    ├─ CLOB execution (buy/sell)     ├─ Logs + trace timeline
-                       ├─ PWS anticipation formula      ├─ Settings + toggles
+Ruth (Rust/Axum)       Wendy (TypeScript/Fastify)      Marty (React/Vite)       Jonah (Python/FastAPI)
+Sensor                 Brain                            Dashboard                Analyst
+├─ METAR 3s poll       ├─ Threshold detection           ├─ Station cards          ├─ Claude Haiku LLM
+├─ PWS 60s poll        ├─ Trading guards                ├─ Positions + P&L        ├─ METAR-triggered analysis
+└─ POST → Wendy+Jonah  ├─ CLOB execution (buy/sell)     ├─ Logs + trace timeline  ├─ Qdrant RAG (optional)
+                       ├─ PWS anticipation formula      ├─ Settings + toggles     └─ Advisory predictions
                        ├─ WebSocket push → Marty        └─ Manual buy/sell
                        └─ PostgreSQL logging
 ```
 
 ## Projects
 
-| Project | Directory | Stack | URL | Port |
-|---------|-----------|-------|-----|------|
-| **Ruth** | `wbot-ruth/` | Rust, Axum, Tokio | ruth.wozark.com (internal only) | 8080 |
-| **Wendy** | `wbot-wendy/` | TypeScript, Fastify 5, Drizzle | wendy.wozark.com | 3000 |
-| **Marty** | `wbot-marty/` | React 19, Vite, Tailwind v4, Flowbite | marty.wozark.com | 80 |
+| Project | Directory | Stack | URL | Port | Status |
+|---------|-----------|-------|-----|------|--------|
+| **Ruth** | `wbot-ruth/` | Rust, Axum, Tokio | internal only | 8080 | Deployed |
+| **Wendy** | `wbot-wendy/` | TypeScript, Fastify 5, Drizzle | wendy.wozark.com | 3000 | Deployed |
+| **Marty** | `wbot-marty/` | React 19, Vite, Tailwind v4, Flowbite | marty.wozark.com | 80 | Deployed |
+| **Jonah** | `wbot-jonah/` | Python 3.12, FastAPI, Claude Haiku, Qdrant | internal only | 8000 | Awaiting deploy |
 
 Each project has its own `CLAUDE.md` with detailed instructions. Open Claude in the specific project directory to work on it.
 
@@ -39,12 +40,15 @@ Each project has its own `CLAUDE.md` with detailed instructions. Open Claude in 
 
 ```
 Ruth → Wendy:  HTTP POST /signal (raw METAR + PWS data, auth: RUTH_SECRET)
+Ruth → Jonah:  HTTP POST /signal (copy, JONAH_ENABLED toggle, fire-and-forget)
+Jonah → Wendy: HTTP POST /prediction (advisory, Wendy works without it)
 Wendy → Marty: WebSocket push (real-time events) + REST API (JWT auth)
 Marty → Wendy: REST commands (buy, sell, settings) with JWT
 ```
 
 **Internal (container-to-container):**
 - Ruth → Wendy: `http://srv-captain--wendy:3000`
+- Ruth → Jonah: `http://srv-captain--jonah:8000` (when JONAH_ENABLED=true)
 - Wendy → DB: `srv-captain--wbot-db:5432`
 
 **Public:**
