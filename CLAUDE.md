@@ -7,7 +7,7 @@
 
 ## Project
 
-Wozark is a weather temperature auto-trading system for Polymarket. It consists of 4 projects (3 deployed + 1 awaiting deploy) that work together to capture weather data, predict daily highs, make trading decisions, and provide a real-time operations dashboard.
+Wozark is a weather temperature auto-trading system for Polymarket. It consists of 4 deployed projects that work together to capture weather data, predict daily highs, make trading decisions, and provide a real-time operations dashboard.
 
 **CapRover panel:** https://captain.wozark.com/
 **VPS IP:** 168.231.70.56 (East Coast)
@@ -17,12 +17,12 @@ Wozark is a weather temperature auto-trading system for Polymarket. It consists 
 ```
 Ruth (Rust/Axum)       Wendy (TypeScript/Fastify)      Marty (React/Vite)       Jonah (Python/FastAPI)
 Sensor                 Brain                            Dashboard                Analyst
-├─ METAR 3s poll       ├─ Threshold detection           ├─ Station cards          ├─ Claude Haiku LLM
-├─ PWS 60s poll        ├─ Trading guards                ├─ Positions + P&L        ├─ METAR-triggered analysis
-└─ POST → Wendy+Jonah  ├─ CLOB execution (buy/sell)     ├─ Logs + trace timeline  ├─ Qdrant RAG (optional)
-                       ├─ PWS anticipation formula      ├─ Settings + toggles     └─ Advisory predictions
-                       ├─ WebSocket push → Marty        └─ Manual buy/sell
-                       └─ PostgreSQL logging
+├─ METAR 3s poll       ├─ Threshold detection           ├─ Station cards          ├─ Claude Sonnet dawn (6am local)
+├─ PWS 60s poll        ├─ Trading guards                ├─ Positions + P&L        ├─ Claude Haiku briefing/peak
+└─ POST → Wendy+Jonah  ├─ CLOB execution (buy/sell)     ├─ Logs + trace timeline  ├─ Open-Meteo forecast
+                       ├─ PWS anticipation formula      ├─ Settings + toggles     ├─ UPGRADE/DOWNGRADE advisories
+                       ├─ WebSocket push → Marty        └─ Manual buy/sell        ├─ Qdrant RAG (learning)
+                       └─ PostgreSQL logging                                      └─ 30min peak updates
 ```
 
 ## Projects
@@ -32,7 +32,7 @@ Sensor                 Brain                            Dashboard               
 | **Ruth** | `wbot-ruth/` | Rust, Axum, Tokio | internal only | 8080 | Deployed |
 | **Wendy** | `wbot-wendy/` | TypeScript, Fastify 5, Drizzle | wendy.wozark.com | 3000 | Deployed |
 | **Marty** | `wbot-marty/` | React 19, Vite, Tailwind v4, Flowbite | marty.wozark.com | 80 | Deployed |
-| **Jonah** | `wbot-jonah/` | Python 3.12, FastAPI, Claude Haiku, Qdrant | internal only | 8000 | Awaiting deploy |
+| **Jonah** | `wbot-jonah/` | Python 3.12, FastAPI, Claude Haiku, Qdrant | internal only | 8000 | Deployed |
 
 Each project has its own `CLAUDE.md` with detailed instructions. Open Claude in the specific project directory to work on it.
 
@@ -41,9 +41,10 @@ Each project has its own `CLAUDE.md` with detailed instructions. Open Claude in 
 ```
 Ruth → Wendy:  HTTP POST /signal (raw METAR + PWS data, auth: RUTH_SECRET)
 Ruth → Jonah:  HTTP POST /signal (copy, JONAH_ENABLED toggle, fire-and-forget)
-Jonah → Wendy: HTTP POST /prediction (advisory, Wendy works without it)
+Jonah → Wendy: HTTP POST /prediction (advisory: predictions, UPGRADE, DOWNGRADE)
 Wendy → Marty: WebSocket push (real-time events) + REST API (JWT auth)
 Marty → Wendy: REST commands (buy, sell, settings) with JWT
+Marty → Wendy → Jonah: POST /predictions/refresh/:station (manual refresh proxy)
 ```
 
 **Internal (container-to-container):**
@@ -81,10 +82,13 @@ Marty → Wendy: REST commands (buy, sell, settings) with JWT
 ```
 1. Ruth polls NOAA every 3s → detects new METAR → POST /signal {type:"METAR"} to Wendy
 2. Ruth polls WU API every 60s → captures 3 PWS per airport → POST /signal {type:"PWS"} to Wendy
-3. Wendy receives METAR → updates running max → detects threshold crossing → evaluates guards → executes trade on CLOB
-4. Wendy receives PWS → calculates anticipation (gap/conf/ramp) → if STRONG → executes anticipation BUY
-5. Wendy broadcasts all events to Marty via WebSocket
-6. Marty displays real-time: station cards, positions, logs, trace timelines
+3. Ruth also sends METAR signals to Jonah (fire-and-forget)
+4. Jonah runs dawn analysis (Sonnet, 6am local), then briefing/peak updates (Haiku, 30min intervals)
+5. Jonah sends predictions + UPGRADE/DOWNGRADE advisories → POST /prediction to Wendy
+6. Wendy receives METAR → updates running max → detects threshold crossing → evaluates guards → executes trade on CLOB
+7. Wendy receives PWS → calculates anticipation (gap/conf/ramp) → if STRONG → executes anticipation BUY
+8. Wendy broadcasts all events (including AI predictions) to Marty via WebSocket
+9. Marty displays real-time: station cards, positions, logs, trace timelines, AI insights
 ```
 
 ## Anticipation Formula (PWS → predicted temperature)
