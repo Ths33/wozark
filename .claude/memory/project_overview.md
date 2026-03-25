@@ -1,26 +1,37 @@
 ---
 name: Wozark V5 Project State
-description: Weather auto-trading system for Polymarket with 4 services (Ruth/Wendy/Marty active, Jonah implemented awaiting deploy)
+description: Weather auto-trading system for Polymarket. Wendy operates solo. Jonah in learning mode (disconnected from trading).
 type: project
 ---
 
-Wozark is a weather temperature auto-trading system for Polymarket, consisting of 4 projects:
+Wozark is a weather temperature auto-trading system for Polymarket, consisting of 4 deployed projects:
 
-- **Ruth** (Rust/Axum) — Pure sensor polling NOAA METAR (3s) + Weather Underground PWS (60s). Has JONAH_ENABLED toggle for dual signal delivery. Deployed.
-- **Wendy** (TypeScript/Fastify 5/Drizzle) — Trading brain with all business logic, CLOB execution, WebSocket push. Deployed. Recent fixes: disabled PWS_EXIT auto-sell, added log dedup, added portfolio sync, skip resolved markets.
-- **Marty** (React 19/Vite/Tailwind v4/Flowbite) — Real-time operations dashboard SPA. Deployed. Has 30s polling fallback.
-- **Jonah** (Python/FastAPI) — AI analyst for daily max temperature prediction. Implemented, repo on GitHub, NOT YET DEPLOYED. Decoupled advisory mode — disabling has zero impact on trading.
+- **Ruth** (Rust/Axum) — Pure sensor polling NOAA METAR (3s) + Weather Underground PWS (60s). Enriched payloads: full METAR (temp, dewpoint, humidity, wind, clouds, pressure, 6h max, raw) + PWS (temp, solar radiation, UV, wind). Deployed.
+- **Wendy** (TypeScript/Fastify 5/Drizzle) — Trading brain operating independently. METAR threshold + PWS anticipation (strict: score ≥0.70, 20min-before-METAR window, max 1 bucket jump). Persists running max across restarts. Jonah predictions logged but NOT executed. Deployed.
+- **Marty** (React 19/Vite/Tailwind v4/Flowbite) — Real-time operations dashboard SPA. Insights page shows Jonah predictions (display only). Deployed.
+- **Jonah** (Python/FastAPI) — AI analyst in **LEARNING MODE**. Predicts but does NOT trade. Stores every prediction in `predictions` table. Learning loop compares vs actual METAR max. Receives full Ruth payload (METAR history + PWS solar/UV). ~$15/month.
 
-**Why:** Trading weather temperature markets on Polymarket using real-time METAR data for authoritative signals and PWS data for anticipation/edge.
+**Infrastructure:** CapRover on VPS (168.231.70.56), PostgreSQL (srv-captain--wdb:5432), Qdrant (srv-captain--qdrant:6333), 9 weather stations (6 US, 2 EU, 1 Canada). Deploy = push to main.
 
-**How to apply:** Each project is independent with its own git repo, CLAUDE.md, and deploy pipeline. Work on specific projects by cd-ing into their directory. Cross-project work (API contracts, integration) happens from the master wozark/ directory.
+## Current State (2026-03-25)
 
-Infrastructure: CapRover on VPS 168.231.70.56, PostgreSQL internal, 9 weather stations (6 US, 2 EU, 1 Canada). Deploy = push to main (GitHub webhook triggers CapRover auto-deploy).
+- **Wendy trades alone** — METAR is primary, PWS anticipation with strict guards
+- **Jonah observes** — predictions stored, accuracy tracked, no trade authority
+- **Reconnection criteria:** Jonah >70% accuracy over 5+ consecutive days
 
-## Known Issues (2026-03-24)
+## PWS Trading Rules
+- Entry: STRONG score (≥0.70) + bucket margin (≥0.3°F) + 20min before METAR window + max 1 bucket above current + no active anticipation
+- Hold: always (no stop-loss)
+- Exit: only ROTATE (new METAR max) or manual sell
 
-- ROTATE sells positions that were already manually closed on Polymarket ("not enough balance/allowance")
-- Harvest during ROTATE can act against existing positions (buys NO on bucket where we have YES)
-- Bot acts on stale internal state when user trades manually on Polymarket — portfolio sync (3min) helps but doesn't cover ROTATE moment
-- PWS has systematic upward bias (2-4°F above METAR) — buys waypoint buckets instead of predicted daily max
-- Multiple buys/sells on same bucket within minutes (Chicago 48-49 today)
+## Monitor
+- Duplicate detection by station:tokenId (not station alone)
+- Verifies position exists before sell retry
+- Terminal errors (balance/allowance) stop immediately
+
+## Resolved Issues
+- Position sync: Wendy reconciles with real CLOB positions (detects external buys/sells)
+- Running max persisted across restarts (queries today's max METAR + traded buckets from DB)
+- Monitor duplicate fix: groups by tokenId, terminal error handling
+- Jonah °C single values (not ranges)
+- PWS log noise reduced (dedup every 10min)

@@ -16,13 +16,13 @@ Wozark is a weather temperature auto-trading system for Polymarket. It consists 
 
 ```
 Ruth (Rust/Axum)       Wendy (TypeScript/Fastify)      Marty (React/Vite)       Jonah (Python/FastAPI)
-Sensor                 Brain                            Dashboard                Analyst
+Sensor                 Brain                            Dashboard                Analyst (LEARNING MODE)
 ├─ METAR 3s poll       ├─ Threshold detection           ├─ Station cards          ├─ Claude Sonnet dawn (6am local)
 ├─ PWS 60s poll        ├─ Trading guards                ├─ Positions + P&L        ├─ Claude Haiku briefing/peak
-└─ POST → Wendy+Jonah  ├─ CLOB execution (buy/sell)     ├─ Logs + trace timeline  ├─ Open-Meteo forecast
-                       ├─ PWS anticipation formula      ├─ Settings + toggles     ├─ UPGRADE/DOWNGRADE advisories
+└─ POST → Wendy+Jonah  ├─ CLOB execution (buy/sell)     ├─ Logs + trace timeline  ├─ Full METAR+PWS from Ruth
+                       ├─ PWS anticipation (strict)     ├─ Settings + toggles     ├─ predictions table (accuracy tracking)
                        ├─ WebSocket push → Marty        └─ Manual buy/sell        ├─ Qdrant RAG (learning)
-                       └─ PostgreSQL logging                                      └─ 30min peak updates
+                       └─ PostgreSQL logging                                      └─ NO trade triggers (observing only)
 ```
 
 ## Projects
@@ -32,7 +32,7 @@ Sensor                 Brain                            Dashboard               
 | **Ruth** | `wbot-ruth/` | Rust, Axum, Tokio | internal only | 8080 | Deployed |
 | **Wendy** | `wbot-wendy/` | TypeScript, Fastify 5, Drizzle | wendy.wozark.com | 3000 | Deployed |
 | **Marty** | `wbot-marty/` | React 19, Vite, Tailwind v4, Flowbite | marty.wozark.com | 80 | Deployed |
-| **Jonah** | `wbot-jonah/` | Python 3.12, FastAPI, Claude Haiku, Qdrant | internal only | 8000 | Deployed |
+| **Jonah** | `wbot-jonah/` | Python 3.12, FastAPI, Claude Haiku, Qdrant | internal only | 8000 | Learning mode |
 
 Each project has its own `CLAUDE.md` with detailed instructions. Open Claude in the specific project directory to work on it.
 
@@ -41,7 +41,7 @@ Each project has its own `CLAUDE.md` with detailed instructions. Open Claude in 
 ```
 Ruth → Wendy:  HTTP POST /signal (raw METAR + PWS data, auth: RUTH_SECRET)
 Ruth → Jonah:  HTTP POST /signal (copy, JONAH_ENABLED toggle, fire-and-forget)
-Jonah → Wendy: HTTP POST /prediction (advisory: predictions, UPGRADE, DOWNGRADE)
+Jonah → Wendy: HTTP POST /prediction (advisory only — logged + broadcast, NO trade execution)
 Wendy → Marty: WebSocket push (real-time events) + REST API (JWT auth)
 Marty → Wendy: REST commands (buy, sell, settings) with JWT
 Marty → Wendy → Jonah: POST /predictions/refresh/:station (manual refresh proxy)
