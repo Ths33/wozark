@@ -17,8 +17,8 @@ Wozark is a weather temperature auto-trading system for Polymarket. It consists 
 ```
 Ruth (Rust/Axum)       Wendy (TypeScript/Fastify)      Marty (React/Vite)       Jonah (Python/FastAPI)
 Sensor                 Brain                            Dashboard                Analyst (V5 Ensemble)
-├─ METAR 3s poll       ├─ Threshold detection           ├─ Station cards          ├─ 5-source ensemble:
-├─ PWS 60s poll        ├─ Trading guards                ├─ Positions + P&L        │  LightGBM, Chronos,
+├─ METAR adaptive poll ├─ Threshold detection           ├─ Station cards          ├─ 5-source ensemble:
+├─ PWS 5min poll       ├─ Trading guards                ├─ Positions + P&L        │  LightGBM, Chronos,
 └─ POST → Wendy+Jonah  ├─ CLOB execution (buy/sell)     ├─ Logs + trace timeline  │  Open-Meteo, RAG, GPT-5
                        ├─ PWS anticipation (strict)     ├─ Settings + toggles     ├─ Range detection + timing
                        ├─ WebSocket push → Marty        └─ Manual buy/sell        ├─ Qdrant RAG (auto-learning)
@@ -80,10 +80,10 @@ Marty → Wendy → Jonah: POST /predictions/refresh/:station (manual refresh pr
 ## Signal Flow
 
 ```
-1. Ruth polls NOAA every 3s → detects new METAR → POST /signal {type:"METAR"} to Wendy
-2. Ruth polls WU API every 60s → captures 3 PWS per airport → POST /signal {type:"PWS"} to Wendy
-3. Ruth also sends METAR signals to Jonah (fire-and-forget)
-4. Jonah runs 5-source ensemble (LightGBM + Chronos + Open-Meteo + RAG + GPT-5) at dawn (6am local), then updates every 30min from 10am to peak_end
+1. Ruth polls NOAA adaptively (60s normal, 3s in ±5min window near expected METAR) → POST /signal to Wendy
+2. Ruth polls WU API every 5min → captures 3 PWS per airport → POST /signal {type:"PWS"} to Wendy
+3. Ruth also sends METAR+PWS signals to Jonah (fire-and-forget)
+4. Jonah runs 5-source ensemble (LightGBM + Chronos + Open-Meteo + RAG + GPT-5) at dawn (6am local), then updates every 30min (or 5min near peak) from 10am to peak_end
 5. Jonah sends range prediction + timing signal (WAIT/SMALL/MEDIUM/STRONG) → POST /prediction to Wendy
 6. Wendy receives METAR → updates running max → detects threshold crossing → evaluates guards → executes trade on CLOB
 7. Wendy receives PWS → calculates anticipation (gap/conf/ramp) → if STRONG → executes anticipation BUY
