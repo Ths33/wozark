@@ -16,13 +16,13 @@ Wozark is a weather temperature auto-trading system for Polymarket. It consists 
 
 ```
 Ruth (Rust/Axum)       Wendy (TypeScript/Fastify)      Marty (React/Vite)       Jonah (Python/FastAPI)
-Sensor                 Brain                            Dashboard                Analyst (LEARNING MODE)
-├─ METAR 3s poll       ├─ Threshold detection           ├─ Station cards          ├─ Claude Sonnet dawn (6am local)
-├─ PWS 60s poll        ├─ Trading guards                ├─ Positions + P&L        ├─ Claude Haiku briefing/peak
-└─ POST → Wendy+Jonah  ├─ CLOB execution (buy/sell)     ├─ Logs + trace timeline  ├─ Full METAR+PWS from Ruth
-                       ├─ PWS anticipation (strict)     ├─ Settings + toggles     ├─ predictions table (accuracy tracking)
-                       ├─ WebSocket push → Marty        └─ Manual buy/sell        ├─ Qdrant RAG (learning)
-                       └─ PostgreSQL logging                                      └─ NO trade triggers (observing only)
+Sensor                 Brain                            Dashboard                Analyst (V5 Ensemble)
+├─ METAR 3s poll       ├─ Threshold detection           ├─ Station cards          ├─ 5-source ensemble:
+├─ PWS 60s poll        ├─ Trading guards                ├─ Positions + P&L        │  LightGBM, Chronos,
+└─ POST → Wendy+Jonah  ├─ CLOB execution (buy/sell)     ├─ Logs + trace timeline  │  Open-Meteo, RAG, GPT-5
+                       ├─ PWS anticipation (strict)     ├─ Settings + toggles     ├─ Range detection + timing
+                       ├─ WebSocket push → Marty        └─ Manual buy/sell        ├─ Qdrant RAG (auto-learning)
+                       └─ PostgreSQL logging                                      └─ Advisory → Wendy
 ```
 
 ## Projects
@@ -32,7 +32,7 @@ Sensor                 Brain                            Dashboard               
 | **Ruth** | `wbot-ruth/` | Rust, Axum, Tokio | internal only | 8080 | Deployed |
 | **Wendy** | `wbot-wendy/` | TypeScript, Fastify 5, Drizzle | wendy.wozark.com | 3000 | Deployed |
 | **Marty** | `wbot-marty/` | React 19, Vite, Tailwind v4, Flowbite | marty.wozark.com | 80 | Deployed |
-| **Jonah** | `wbot-jonah/` | Python 3.12, FastAPI, Claude Haiku, Qdrant | internal only | 8000 | Learning mode |
+| **Jonah** | `wbot-jonah/` | Python 3.12, FastAPI, GPT-5, LightGBM, Qdrant | internal only | 8000 | Deployed (V5) |
 
 Each project has its own `CLAUDE.md` with detailed instructions. Open Claude in the specific project directory to work on it.
 
@@ -83,8 +83,8 @@ Marty → Wendy → Jonah: POST /predictions/refresh/:station (manual refresh pr
 1. Ruth polls NOAA every 3s → detects new METAR → POST /signal {type:"METAR"} to Wendy
 2. Ruth polls WU API every 60s → captures 3 PWS per airport → POST /signal {type:"PWS"} to Wendy
 3. Ruth also sends METAR signals to Jonah (fire-and-forget)
-4. Jonah runs dawn analysis (Sonnet, 6am local), then briefing/peak updates (Haiku, 30min intervals)
-5. Jonah sends predictions + UPGRADE/DOWNGRADE advisories → POST /prediction to Wendy
+4. Jonah runs 5-source ensemble (LightGBM + Chronos + Open-Meteo + RAG + GPT-5) at dawn (6am local), then updates every 30min from 10am to peak_end
+5. Jonah sends range prediction + timing signal (WAIT/SMALL/MEDIUM/STRONG) → POST /prediction to Wendy
 6. Wendy receives METAR → updates running max → detects threshold crossing → evaluates guards → executes trade on CLOB
 7. Wendy receives PWS → calculates anticipation (gap/conf/ramp) → if STRONG → executes anticipation BUY
 8. Wendy broadcasts all events (including AI predictions) to Marty via WebSocket
