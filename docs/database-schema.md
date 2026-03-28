@@ -103,7 +103,7 @@ Indexes: `(station, captured_at)`
 | price | REAL | YES | — | Per-share price |
 | order_id | VARCHAR(128) | YES | — | CLOB order ID |
 | fill_status | VARCHAR(10) | YES | — | FILLED, PARTIAL, FAILED |
-| signal_type | VARCHAR(10) | NOT NULL | — | METAR, PWS, MANUAL, AI_UPGRADE, AI_TRIGGER |
+| signal_type | VARCHAR(10) | NOT NULL | — | METAR, PWS, MANUAL, AI_UPGRADE, AI_TRIGGER, EXTERNAL |
 | market_snapshot | JSONB | YES | — | {yesPrice, noPrice, ...} |
 | dry_run | BOOLEAN | — | false | DRY_MODE flag |
 | created_at | TIMESTAMPTZ | — | NOW() | — |

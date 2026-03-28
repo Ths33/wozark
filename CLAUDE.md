@@ -17,12 +17,16 @@ Wozark is a weather temperature auto-trading system for Polymarket. It consists 
 ```
 Ruth (Rust/Axum)       Wendy (TypeScript/Fastify)      Marty (React/Vite)       Jonah (Python/FastAPI)
 Sensor                 Brain                            Dashboard                Analyst (V5 Ensemble)
-├─ METAR adaptive poll ├─ Threshold detection           ├─ Station cards          ├─ 5-source ensemble:
-├─ PWS 5min poll       ├─ Trading guards                ├─ Positions + P&L        │  LightGBM, Chronos,
-└─ POST → Wendy+Jonah  ├─ CLOB execution (buy/sell)     ├─ Logs + trace timeline  │  Open-Meteo, RAG, GPT-5
-                       ├─ PWS anticipation (strict)     ├─ Settings + toggles     ├─ Range detection + timing
-                       ├─ WebSocket push → Marty        └─ Manual buy/sell        ├─ Qdrant RAG (auto-learning)
-                       └─ PostgreSQL logging                                      └─ Advisory → Wendy
+├─ METAR dual-hour poll├─ Threshold detection (upward)  ├─ Mobile-first shadcn    ├─ 5-source ensemble:
+├─ PWS 5min poll       ├─ Trading guards + spread guard ├─ Station detail + METAR │  LightGBM, Chronos,
+├─ Dynamic station list├─ CLOB API wrapper (dynamic fee)├─ Positions + P&L        │  Open-Meteo, RAG, GPT-5
+├─ Retry buffer (30s)  ├─ PayloadCache + /trigger       ├─ Breadcrumb navigation  ├─ Range detection + timing
+                       ├─ PWS anticipation (strict)     └─ Auto-refresh (30s/60s) ├─ Qdrant RAG (auto-learning)
+                       ├─ Kill switch (tradingEnabled)                            ├─ POST /trigger → Wendy
+                       ├─ Rate limiting (login/trading)                            └─ Advisory → Wendy
+                       ├─ httpOnly JWT cookies
+                       ├─ WebSocket push → Marty
+                       └─ PostgreSQL logging
 ```
 
 ## Projects
@@ -31,7 +35,7 @@ Sensor                 Brain                            Dashboard               
 |---------|-----------|-------|-----|------|--------|
 | **Ruth** | `wbot-ruth/` | Rust, Axum, Tokio | internal only | 8080 | Deployed |
 | **Wendy** | `wbot-wendy/` | TypeScript, Fastify 5, Drizzle | wendy.wozark.com | 3000 | Deployed |
-| **Marty** | `wbot-marty/` | React 19, Vite, Tailwind v4, Flowbite | marty.wozark.com | 80 | Deployed |
+| **Marty** | `wbot-marty/` | React 19, Vite, Tailwind v4, shadcn | marty.wozark.com | 80 | Deployed |
 | **Jonah** | `wbot-jonah/` | Python 3.12, FastAPI, GPT-5, LightGBM, Qdrant | internal only | 8000 | Deployed (V5) |
 
 Each project has its own `CLAUDE.md` with detailed instructions. Open Claude in the specific project directory to work on it.
@@ -41,7 +45,8 @@ Each project has its own `CLAUDE.md` with detailed instructions. Open Claude in 
 ```
 Ruth → Wendy:  HTTP POST /signal (raw METAR + PWS data, auth: RUTH_SECRET)
 Ruth → Jonah:  HTTP POST /signal (copy, JONAH_ENABLED toggle, fire-and-forget)
-Jonah → Wendy: HTTP POST /prediction (advisory only — logged + broadcast, NO trade execution)
+Jonah → Wendy: HTTP POST /prediction (advisory — logged + broadcast)
+Jonah → Wendy: HTTP POST /trigger (trade execution when confidence >= 70%, MEDIUM/STRONG timing)
 Wendy → Marty: WebSocket push (real-time events) + REST API (JWT auth)
 Marty → Wendy: REST commands (buy, sell, settings) with JWT
 Marty → Wendy → Jonah: POST /predictions/refresh/:station (manual refresh proxy)
@@ -63,19 +68,20 @@ Marty → Wendy → Jonah: POST /predictions/refresh/:station (manual refresh pr
 - **Database:** wbot_prod
 - **Tables:** metar_observations, trades, logs, app_config, auth_sessions
 
-## Stations (9)
+## Stations (10, US-only)
 
 | Station | ICAO | Unit | PWS Coverage |
 |---------|------|------|-------------|
-| Seattle | KSEA | F | 3 PWS, 1.6km |
-| Dallas | KDAL | F | 3 PWS, 1.9km |
-| Chicago | KORD | F | 3 PWS, 0km |
-| New York | KLGA | F | 3 PWS, 3.0km |
-| Miami | KMIA | F | 3 PWS, 3.2km |
-| Atlanta | KATL | F | 3 PWS, 3.7km |
-| London | EGLC | C | 3 PWS, 1.6km |
-| Paris | LFPG | C | 3 PWS, 2.5km |
-| Toronto | CYYZ | C | 3 PWS, 7.8km |
+| Seattle | KSEA | F | 3 PWS |
+| Dallas | KDAL | F | 3 PWS |
+| Chicago | KORD | F | 3 PWS |
+| New York | KLGA | F | 3 PWS |
+| Miami | KMIA | F | 3 PWS |
+| Atlanta | KATL | F | 3 PWS |
+| Los Angeles | KLAX | F | 3 PWS |
+| San Francisco | KSFO | F | 3 PWS |
+| Austin | KAUS | F | 3 PWS |
+| Houston | KHOU | F | 3 PWS |
 
 ## Signal Flow
 
@@ -85,7 +91,8 @@ Marty → Wendy → Jonah: POST /predictions/refresh/:station (manual refresh pr
 3. Ruth also sends METAR+PWS signals to Jonah (fire-and-forget)
 4. Jonah runs 5-source ensemble (LightGBM + Chronos + Open-Meteo + RAG + GPT-5) at dawn (6am local), then updates every 30min (or 5min near peak) from 10am to peak_end
 5. Jonah sends range prediction + timing signal (WAIT/SMALL/MEDIUM/STRONG) → POST /prediction to Wendy
-6. Wendy receives METAR → updates running max → detects threshold crossing → evaluates guards → executes trade on CLOB
+5b. When timing is MEDIUM or STRONG (confidence >= 70%), Jonah fires POST /trigger to Wendy for trade execution
+6. Wendy receives METAR → updates running max → detects upward threshold crossing → evaluates guards → executes trade on CLOB
 7. Wendy receives PWS → calculates anticipation (gap/conf/ramp) → if STRONG → executes anticipation BUY
 8. Wendy broadcasts all events (including AI predictions) to Marty via WebSocket
 9. Marty displays real-time: station cards, positions, logs, trace timelines, AI insights
@@ -112,13 +119,18 @@ WEAK:     ignore
 - METAR is authority — only METAR triggers ROTATE
 - ROTATE: BUY first, then SELL + harvest parallel (if BUY succeeds)
 - PWS anticipation: BUY only (never ROTATE)
+- /trigger supports ROTATE when existing position in different bucket
 - Before 7am local → skip
 - Gamma < 10% → skip, >= 75% → skip
+- Spread guard: > 6c = skip
 - Book liquidity check before every trade
 - Daily loss limit ($20 default)
-- FOK verification via getOrder() + size_matched
+- FOK verification fast-path (matched = instant, no polling)
+- Dynamic feeRateBps/tickSize/negRisk per market (no hardcoded values)
+- tradingEnabled=false is absolute kill switch (blocks ALL orders)
 - No stop-loss — hold until resolution
 - DRY_MODE=true for testing (simulates CLOB)
+- Position dust filter (< $0.01 value ignored)
 
 ## Deploy
 
@@ -162,8 +174,11 @@ Each has its own CLAUDE.md with complete context.
 | POST | /buy | JWT | `{station, bucket, side, amount}` → Wendy resolves tokenId |
 | POST | /sell | JWT | `{station, tokenId, shares}` |
 | POST | /signal | RUTH_SECRET | Raw METAR or PWS from Ruth |
+| POST | /trigger | RUTH_SECRET | Jonah fires trade (BUY/ROTATE) |
+| GET | /data/:station | JWT | Meteorological data (METAR + PWS) |
 | GET | /stations/config | RUTH_SECRET | Station list for Ruth polling |
-| WS | /ws?token=JWT | JWT | Real-time push events |
+| GET | /system/status | JWT | System status including Jonah DB |
+| WS | /ws?token=JWT | JWT | Real-time push events (also ?token= query param) |
 
 ## Critical Rules
 

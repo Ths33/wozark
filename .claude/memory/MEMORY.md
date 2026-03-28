@@ -1,12 +1,20 @@
 # Memory Index — Wozark (Master)
 
-- [project_overview.md](project_overview.md) — Wozark V5 system state: 4 deployed services (Ruth/Wendy/Marty/Jonah)
-- [project_jonah.md](project_jonah.md) — Jonah AI analyst: deployed 2026-03-25, 4-phase architecture, Open-Meteo forecast, UPGRADE/DOWNGRADE
+- [project_overview.md](project_overview.md) — Wozark V5 system state: 10 US stations, Jonah fires /trigger to Wendy, tradingEnabled kill switch
+- [project_jonah_v4.md](project_jonah_v4.md) — Jonah V5 mathematical ensemble: GPT-5 + 4 sources, range detection, timing signals, /trigger execution
+- [project_trading_performance.md](project_trading_performance.md) — Trading performance: $96→$340 in week 1 (manual entries)
 - [project_trading_lessons.md](project_trading_lessons.md) — First trading day lessons: PWS bias, buy-sell loops, harvest conflicts
 - [user_tales.md](user_tales.md) — User profile and working preferences
 - [feedback_no_untested_changes.md](feedback_no_untested_changes.md) — Never change working CLOB/trading code without verifying v4 first
 - [feedback_deploy_means_push.md](feedback_deploy_means_push.md) — Deploy = git push to main. GitHub webhook triggers CapRover auto-deploy.
-- [project_backlog.md](project_backlog.md) — Feature backlog: Marty V2 charts, sell strategy
+- [project_backlog.md](project_backlog.md) — Prioritized backlog: P2 timing/sell, P3 prompts. P0/P1/P4 mostly done.
 - [feedback_monitor_duplicates.md](feedback_monitor_duplicates.md) — Monitor groups by tokenId not station; terminal CLOB errors stop retry
 - [reference_database.md](reference_database.md) — External DB access: postgres@45.93.138.190:15432/wbot_prod
 - [feedback_jonah_analysis_model.md](feedback_jonah_analysis_model.md) — How Jonah should analyze: METAR trend + PWS solar/UV + raw clouds + temporal context
+- [feedback_ksea_prediction.md](feedback_ksea_prediction.md) — KSEA lesson: strong solar + strong wind = temp cap. Don't over-weight solar alone.
+- [feedback_pragmatic_debugging.md](feedback_pragmatic_debugging.md) — Debug by following user's hypothesis first, trace data flow end-to-end before infrastructure deep-dives
+- [feedback_less_interview_more_delivery.md](feedback_less_interview_more_delivery.md) — Stop excessive brainstorming questions, deliver concrete artifacts fast
+- [reference_jonah_database.md](reference_jonah_database.md) — Jonah DB: postgres@45.93.138.190:25432/jonah_prod
+- [feedback_gpt5_weather_analysis.md](feedback_gpt5_weather_analysis.md) — GPT-5 > Claude for weather reasoning. KSEA 58-59°F correct, $200 earned 2026-03-27
+- [feedback_realtime_not_polling.md](feedback_realtime_not_polling.md) — Never use polling as substitute for WS push. Market/positions still need WS broadcast from Wendy.
+- [feedback_pws_peak_persistent.md](feedback_pws_peak_persistent.md) — PWS peaks must be server-side daily, not browser session. Feed to Jonah.
