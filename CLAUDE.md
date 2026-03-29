@@ -92,7 +92,7 @@ Marty → Wendy → Jonah: POST /predictions/refresh/:station (manual refresh pr
 3. Ruth also sends METAR+PWS signals to Jonah (fire-and-forget)
 4. Jonah runs 4-source ensemble (LightGBM + Chronos + Open-Meteo + RAG) + GPT-5 independent predictor at dawn (6am local), then updates every 30min (or 5min near peak) from 10am to peak_end
 5. Jonah sends range prediction + timing signal (WAIT/SMALL/MEDIUM/STRONG) → POST /prediction to Wendy
-5b. When timing is SMALL/MEDIUM/STRONG (thresholds 30/40/55%), Jonah fires POST /trigger to Wendy for trade execution
+5b. When timing is SMALL/MEDIUM/STRONG (thresholds 30/40/55%), Jonah fires POST /trigger to Wendy for trade execution (max 1 bucket above current METAR)
 6. Wendy receives METAR → updates running max → detects upward threshold crossing → evaluates guards → executes trade on CLOB
 7. Wendy receives PWS → buffers data → feeds to Jonah for ensemble analysis (PWS no longer trades autonomously)
 8. Wendy broadcasts all events (including AI predictions) to Marty via WebSocket
@@ -116,14 +116,19 @@ T_estimated = T_metar + (gap * conf * α) + (ramp * β)
 ## Trading Rules
 
 - METAR is authority — only METAR triggers ROTATE
+- METAR and Jonah trade independently — METAR buys confirmed crossings, Jonah buys predictions. Multiple positions per station are valid.
 - ROTATE: BUY first, then SELL + harvest parallel (if BUY succeeds)
 - Jonah trigger: BUY or upward ROTATE (downward ROTATE blocked)
+- Jonah trigger: max 1 bucket above current METAR (4°F for F stations, 2°C for C stations)
+- Jonah exit: SELL when triggered bucket confidence drops below 20% (SELL_THRESHOLD = 0.20)
+- PWS is data-only — feeds Jonah ensemble buffer, no autonomous trading
 - Before 7am local → skip
 - Price floor: 5c (gamma < 5% → skip), ceiling: >= 75% → skip
+- Spread guard removed — no longer needed
 - Book liquidity check before every trade
 - Daily loss limit ($20 default)
 - FOK verification fast-path (matched = instant, no polling)
-- FOK → GTC fallback for delayed orders
+- FOK → GTC fallback for delayed orders (5 attempts × 1s verify)
 - Dynamic feeRateBps/tickSize/negRisk per market (no hardcoded values)
 - tradingEnabled=false is absolute kill switch (blocks ALL orders)
 - No stop-loss — hold until resolution
