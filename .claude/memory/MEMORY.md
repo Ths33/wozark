@@ -1,7 +1,7 @@
 # Memory Index — Wozark (Master)
 
-- [project_overview.md](project_overview.md) — Wozark V5 system state: 10 US stations, Jonah fires /trigger to Wendy, tradingEnabled kill switch
-- [project_jonah_v4.md](project_jonah_v4.md) — Jonah V5 mathematical ensemble: GPT-5 + 4 sources, range detection, timing signals, /trigger execution
+- [project_overview.md](project_overview.md) — Wozark V5 system state: 10 US stations, PWS data-only, Jonah 4-source ensemble, floor 5c, GTC fallback, timing 30/40/55%
+- [project_jonah_v4.md](project_jonah_v4.md) — Jonah V5: 4-source ensemble (LightGBM, Chronos, Open-Meteo, RAG) + GPT-5 independent predictor, timing 30/40/55%
 - [project_trading_performance.md](project_trading_performance.md) — Trading performance: $96→$340 in week 1 (manual entries)
 - [project_trading_lessons.md](project_trading_lessons.md) — First trading day lessons: PWS bias, buy-sell loops, harvest conflicts
 - [user_tales.md](user_tales.md) — User profile and working preferences
@@ -18,3 +18,4 @@
 - [feedback_gpt5_weather_analysis.md](feedback_gpt5_weather_analysis.md) — GPT-5 > Claude for weather reasoning. KSEA 58-59°F correct, $200 earned 2026-03-27
 - [feedback_realtime_not_polling.md](feedback_realtime_not_polling.md) — Never use polling as substitute for WS push. Market/positions still need WS broadcast from Wendy.
 - [feedback_pws_peak_persistent.md](feedback_pws_peak_persistent.md) — PWS peaks must be server-side daily, not browser session. Feed to Jonah.
+- [changes_2026_03_29.md](changes_2026_03_29.md) — PWS disabled as trader, spread guard removed, price floor 5c, GTC fallback, downward ROTATE blocked, timing 30/40/55%

@@ -17,13 +17,14 @@ Wozark is a weather temperature auto-trading system for Polymarket. It consists 
 ```
 Ruth (Rust/Axum)       Wendy (TypeScript/Fastify)      Marty (React/Vite)       Jonah (Python/FastAPI)
 Sensor                 Brain                            Dashboard                Analyst (V5 Ensemble)
-├─ METAR dual-hour poll├─ Threshold detection (upward)  ├─ Mobile-first shadcn    ├─ 5-source ensemble:
-├─ PWS 5min poll       ├─ Trading guards + spread guard ├─ Station detail + METAR │  LightGBM, Chronos,
-├─ Dynamic station list├─ CLOB API wrapper (dynamic fee)├─ Positions + P&L        │  Open-Meteo, RAG, GPT-5
-├─ Retry buffer (30s)  ├─ PayloadCache + /trigger       ├─ Breadcrumb navigation  ├─ Range detection + timing
-                       ├─ PWS anticipation (strict)     └─ Auto-refresh (30s/60s) ├─ Qdrant RAG (auto-learning)
-                       ├─ Kill switch (tradingEnabled)                            ├─ POST /trigger → Wendy
-                       ├─ Rate limiting (login/trading)                            └─ Advisory → Wendy
+├─ METAR dual-hour poll├─ Threshold detection (upward)  ├─ Mobile-first shadcn    ├─ 4-source ensemble:
+├─ PWS 5min poll       ├─ Trading guards                ├─ Station detail + METAR │  LightGBM, Chronos,
+├─ Dynamic station list├─ CLOB API wrapper (dynamic fee)├─ Positions + P&L        │  Open-Meteo, RAG
+├─ Retry buffer (30s)  ├─ PayloadCache + /trigger       ├─ Breadcrumb navigation  ├─ GPT-5 independent predictor
+                       ├─ PWS data → Jonah buffer       └─ Auto-refresh (30s/60s) ├─ Range detection + timing
+                       ├─ Kill switch (tradingEnabled)                            ├─ Qdrant RAG (auto-learning)
+                       ├─ Rate limiting (login/trading)                            ├─ POST /trigger → Wendy
+                       ├─ FOK → GTC fallback                                      └─ Advisory → Wendy
                        ├─ httpOnly JWT cookies
                        ├─ WebSocket push → Marty
                        └─ PostgreSQL logging
@@ -46,7 +47,7 @@ Each project has its own `CLAUDE.md` with detailed instructions. Open Claude in 
 Ruth → Wendy:  HTTP POST /signal (raw METAR + PWS data, auth: RUTH_SECRET)
 Ruth → Jonah:  HTTP POST /signal (copy, JONAH_ENABLED toggle, fire-and-forget)
 Jonah → Wendy: HTTP POST /prediction (advisory — logged + broadcast)
-Jonah → Wendy: HTTP POST /trigger (trade execution when confidence >= 70%, MEDIUM/STRONG timing)
+Jonah → Wendy: HTTP POST /trigger (trade execution, timing thresholds 30/40/55%)
 Wendy → Marty: WebSocket push (real-time events) + REST API (JWT auth)
 Marty → Wendy: REST commands (buy, sell, settings) with JWT
 Marty → Wendy → Jonah: POST /predictions/refresh/:station (manual refresh proxy)
@@ -89,16 +90,18 @@ Marty → Wendy → Jonah: POST /predictions/refresh/:station (manual refresh pr
 1. Ruth polls NOAA adaptively (60s normal, 3s in ±5min window near expected METAR) → POST /signal to Wendy
 2. Ruth polls WU API every 5min → captures 3 PWS per airport → POST /signal {type:"PWS"} to Wendy
 3. Ruth also sends METAR+PWS signals to Jonah (fire-and-forget)
-4. Jonah runs 5-source ensemble (LightGBM + Chronos + Open-Meteo + RAG + GPT-5) at dawn (6am local), then updates every 30min (or 5min near peak) from 10am to peak_end
+4. Jonah runs 4-source ensemble (LightGBM + Chronos + Open-Meteo + RAG) + GPT-5 independent predictor at dawn (6am local), then updates every 30min (or 5min near peak) from 10am to peak_end
 5. Jonah sends range prediction + timing signal (WAIT/SMALL/MEDIUM/STRONG) → POST /prediction to Wendy
-5b. When timing is MEDIUM or STRONG (confidence >= 70%), Jonah fires POST /trigger to Wendy for trade execution
+5b. When timing is SMALL/MEDIUM/STRONG (thresholds 30/40/55%), Jonah fires POST /trigger to Wendy for trade execution
 6. Wendy receives METAR → updates running max → detects upward threshold crossing → evaluates guards → executes trade on CLOB
-7. Wendy receives PWS → calculates anticipation (gap/conf/ramp) → if STRONG → executes anticipation BUY
+7. Wendy receives PWS → buffers data → feeds to Jonah for ensemble analysis (PWS no longer trades autonomously)
 8. Wendy broadcasts all events (including AI predictions) to Marty via WebSocket
 9. Marty displays real-time: station cards, positions, logs, trace timelines, AI insights
 ```
 
-## Anticipation Formula (PWS → predicted temperature)
+## Anticipation Formula (PWS → predicted temperature, reference only)
+
+PWS data now feeds to Jonah only — no autonomous trading from PWS signals.
 
 ```
 T_pws       = median(PWS readings)
@@ -108,24 +111,19 @@ ramp        = linear regression of medians over last 10min
 α           = station.pwsAlpha (0.5-0.8)
 β           = 0.3
 T_estimated = T_metar + (gap * conf * α) + (ramp * β)
-
-STRONG:   gap > 2°F AND conf > 0.7 → BUY (never ROTATE on anticipation)
-MODERATE: gap > 1°F AND conf > 0.6 → log alert only
-WEAK:     ignore
 ```
 
 ## Trading Rules
 
 - METAR is authority — only METAR triggers ROTATE
 - ROTATE: BUY first, then SELL + harvest parallel (if BUY succeeds)
-- PWS anticipation: BUY only (never ROTATE)
-- /trigger supports ROTATE when existing position in different bucket
+- Jonah trigger: BUY or upward ROTATE (downward ROTATE blocked)
 - Before 7am local → skip
-- Gamma < 10% → skip, >= 75% → skip
-- Spread guard: > 6c = skip
+- Price floor: 5c (gamma < 5% → skip), ceiling: >= 75% → skip
 - Book liquidity check before every trade
 - Daily loss limit ($20 default)
 - FOK verification fast-path (matched = instant, no polling)
+- FOK → GTC fallback for delayed orders
 - Dynamic feeRateBps/tickSize/negRisk per market (no hardcoded values)
 - tradingEnabled=false is absolute kill switch (blocks ALL orders)
 - No stop-loss — hold until resolution
