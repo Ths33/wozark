@@ -99,6 +99,11 @@ Enrich WebSocket broadcasts (new_metar, pws_update) with full payload data from 
 - ~~Marty — Insights page~~ → Redesigned with phase badges, staleness, refresh buttons
 - ~~Marty — Status page~~ → Health monitoring for all services
 
+### Done (2026-03-29)
+- ~~RAG backfill~~ → `scripts/noaa_backfill.py` rewrote to use Iowa Mesonet (IEM). 3,650 vectors populated in Qdrant (365d × 10 stations). Peak windows aligned with stations.py. Backfill points use None (not false zeros), formatter shows "historical only".
+- ~~Dockerfile scripts/~~ → Added `COPY scripts/ scripts/` to Jonah Dockerfile. Scripts were never copied into container before.
+- ~~DB cleanup~~ → Removed CYYZ/EGLC/LFPG data from jonah_prod and wbot_prod (940 rows).
+
 ### Done (2026-03-28)
 - ~~P1.3/4/5 — Jonah as trade trigger~~ → Jonah fires POST /trigger to Wendy when MEDIUM/STRONG timing (confidence >= 70%). Supports BUY and ROTATE.
 - ~~P4.11 — Marty V2~~ → Complete redesign: mobile-first shadcn, station detail (METAR + PWS + anticipation), per-station logs, breadcrumb nav, auto-refresh (30s/60s), /data/:station raw view. Removed Jonah page.

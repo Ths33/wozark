@@ -32,4 +32,11 @@ range="58-59", range_prob=0.77, confidence=0.74, timing="MEDIUM"
 
 **DB fix:** init_db() now auto-creates jonah_prod database if missing.
 
-**Status:** Code complete, needs deploy + OPENAI_API_KEY in CapRover.
+**RAG status (2026-03-29):**
+- NOT real-time: vectors only added 1x/day (learning.py). Ensemble queries RAG but doesn't feed it.
+- Backfill complete: 3,650 vectors in Qdrant (365 days × 10 stations via IEM). Was 22 before.
+- `scripts/noaa_backfill.py` uses Iowa Mesonet (IEM), includes humidity/wind/dewpoint, --dry-run/--stations flags.
+- Formatter handles backfill points (was_correct=None → "historical only" label).
+- Dockerfile now copies scripts/ dir into container.
+
+**Status:** Deployed (V5). OPENAI_API_KEY configured. Trigger pipeline active (MEDIUM/STRONG → POST /trigger to Wendy).
