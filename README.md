@@ -1,128 +1,202 @@
-# Wozark — Weather Auto-Trading System
+# Wozark Workspace
 
-Polymarket weather temperature auto-trading system. Captures real-time weather data, makes trading decisions, and provides an operations dashboard.
+Workspace principal do sistema de weather auto-trading da Wozark. Este repositorio nao contem a aplicacao em si; ele agrega os quatro subprojetos, documentacao operacional, logs de referencia e scripts de health check.
 
-## Architecture
+## Estrutura
 
+| Projeto | Diretorio | Stack atual | Papel |
+|---------|-----------|-------------|-------|
+| Workspace | `.` | docs + scripts | Orquestracao, referencias e operacao |
+| Ruth | `wbot-ruth/` | Rust, Axum, Tokio | Sensor de METAR e PWS |
+| Wendy | `wbot-wendy/` | TypeScript, Fastify 5, Drizzle | Trading brain + API |
+| Marty | `wbot-marty/` | Next.js 16, React 19, Tailwind v4, Zustand | Dashboard operacional |
+| Jonah | `wbot-jonah/` | Python 3.12, FastAPI, LightGBM, Chronos, Qdrant, OpenAI | Predicao e sinais auxiliares |
+
+## Arquitetura
+
+```text
+Ruth  -- POST /signal ------> Wendy -- REST/WS ------> Marty
+  \                           |                         ^
+   \-- POST /signal -------> Jonah -- /prediction -----/
+                              |-- /trigger -----------> Wendy
+                              \-- /gpt-signal --------> Wendy
 ```
-Ruth (Rust/Axum)       Wendy (TypeScript/Fastify)      Marty (React/Vite)       Jonah (Python/FastAPI)
-Sensor                 Brain                            Dashboard                Analyst
-├─ METAR 3s poll       ├─ Threshold detection           ├─ Station cards          ├─ Claude Haiku LLM
-├─ PWS 60s poll        ├─ Trading guards                ├─ Positions + P&L        ├─ METAR-triggered analysis
-└─ POST → Wendy+Jonah  ├─ CLOB execution (buy/sell)     ├─ Logs + trace timeline  ├─ Qdrant RAG (optional)
-                       ├─ PWS anticipation formula      ├─ Settings + toggles     └─ Advisory predictions
-                       ├─ WebSocket push → Marty        └─ Manual buy/sell
-                       └─ PostgreSQL logging
-```
 
-## Repos
+- Ruth busca a lista de estacoes em Wendy via `GET /stations/config`.
+- Wendy e a fonte central de configuracao, execucao de trades, logs e estado operacional.
+- Marty consome apenas a API/WebSocket da Wendy.
+- Jonah roda o ensemble meteorologico e envia sinais consultivos ou gatilhos para Wendy.
 
-| Project | Repo | Stack |
-|---------|------|-------|
-| **This repo** | [Ths33/wozark](https://github.com/Ths33/wozark) | Orchestration, memory, architecture docs |
-| **Ruth** | [Ths33/ruth](https://github.com/Ths33/ruth) | Rust, Axum, Tokio |
-| **Wendy** | [Ths33/wendy](https://github.com/Ths33/wendy) | TypeScript, Fastify 5, Drizzle |
-| **Marty** | [Ths33/marty](https://github.com/Ths33/marty) | React 19, Vite, Tailwind v4, Flowbite |
-| **Jonah** | [Ths33/jonah](https://github.com/Ths33/jonah) | Python 3.12, FastAPI, Claude Haiku, Qdrant |
+## O que existe neste repo
 
-## Setup on a new machine
+- `docs/database-schema.md`: contrato atual de bancos e payloads entre servicos.
+- `docs/2026-03-23-v5-architecture-design.md`: documento historico da arquitetura V5.
+- `docs/backlog-2026-03-28.md`: backlog tecnico consolidado.
+- `scripts/health-check.sh`: verifica o que e acessivel externamente.
+- `scripts/health-check-internal.sh`: verifica servicos internos quando executado no VPS.
+- `logs/`: snapshots CSV usados para analise e referencia operacional.
 
-### 1. Clone all repos
+## Setup do workspace
 
 ```bash
 mkdir -p ~/personal/wozark && cd ~/personal/wozark
 
-# Master repo (this one)
 git clone git@github.com:Ths33/wozark.git .
-
-# Subprojects
 git clone git@github.com:Ths33/ruth.git wbot-ruth
 git clone git@github.com:Ths33/wendy.git wbot-wendy
 git clone git@github.com:Ths33/marty.git wbot-marty
 git clone git@github.com:Ths33/jonah.git wbot-jonah
 ```
 
-### 2. Link Claude Code memory
+## Setup rapido por projeto
 
-The `.claude/memory/` directory contains shared AI context (project state, decisions, user preferences) that persists across Claude Code sessions. Link it so Claude Code finds it automatically:
-
-```bash
-# Create the Claude Code project config directory
-# The folder name is derived from the absolute path: / → -
-# Example: /home/tales/personal/wozark → -home-tales-personal-wozark
-# Adjust this path to match YOUR machine's absolute path
-
-WOZARK_PATH=$(pwd | sed 's|/|-|g; s|^-||')
-mkdir -p ~/.claude/projects/-${WOZARK_PATH}/
-ln -s "$(pwd)/.claude/memory" ~/.claude/projects/-${WOZARK_PATH}/memory
-```
-
-Verify it works:
-```bash
-ls ~/.claude/projects/-${WOZARK_PATH}/memory/
-# Should show: MEMORY.md, project_overview.md, project_jonah.md, etc.
-```
-
-### 3. Install dependencies
+### Ruth
 
 ```bash
-# Wendy
-cd wbot-wendy && npm install && cd ..
-
-# Marty
-cd wbot-marty && npm install && cd ..
-
-# Ruth (needs Rust toolchain)
-cd wbot-ruth && cargo build && cd ..
+cd wbot-ruth
+cp .env.example .env
+cargo run
 ```
 
-### 4. Environment variables
-
-Each subproject needs its own `.env`. These are NOT committed (secrets). Ask the project owner or check CapRover for production values.
-
-- `wbot-wendy/.env` — DATABASE_URL, POLY_*, JWT_SECRET, RUTH_SECRET
-- `wbot-ruth/.env` — WENDY_URL, RUTH_SECRET, WU_API_KEY, JONAH_ENABLED, JONAH_URL
-- `wbot-marty/.env` — VITE_WENDY_URL, VITE_WENDY_WS_URL
-- `wbot-jonah/.env` — RUTH_SECRET, ANTHROPIC_API_KEY, WENDY_URL, QDRANT_HOST (optional), DATABASE_URL (optional)
-
-## Production
-
-- **CapRover panel:** https://captain.wozark.com/
-- **VPS:** 168.231.70.56 (Brazil East Coast)
-- **Deploy:** Each project auto-deploys on push to `main` via CapRover git webhook
-
-| Service | URL | Internal hostname |
-|---------|-----|-------------------|
-| Wendy | https://wendy.wozark.com | srv-captain--wendy:3000 |
-| Marty | https://marty.wozark.com | — (static SPA) |
-| Ruth | internal only | srv-captain--ruth:8080 |
-| Jonah | internal only | srv-captain--jonah:8000 |
-| DB | internal only | srv-captain--wbot-db:5432 |
-
-## Working with Claude Code
-
-Open Claude Code in the specific project directory to work on it:
+### Wendy
 
 ```bash
-cd ~/personal/wozark              # Cross-project orchestration
-cd ~/personal/wozark/wbot-ruth    # Sensor work
-cd ~/personal/wozark/wbot-wendy   # Trading brain work
-cd ~/personal/wozark/wbot-marty   # Dashboard work
-cd ~/personal/wozark/wbot-jonah   # AI analyst work
+cd wbot-wendy
+cp .env.example .env
+npm install
+npm run dev
 ```
 
-Each project has its own `CLAUDE.md` with detailed context. The master `CLAUDE.md` in this repo covers the full system architecture.
+### Marty
 
-## Stations (9)
+```bash
+cd wbot-marty
+cp .env.example .env
+npm install
+npm run dev
+```
 
-| Station | ICAO | Unit | Location |
-|---------|------|------|----------|
-| Seattle | KSEA | °F | US West |
-| Dallas | KDAL | °F | US South |
-| Chicago | KORD | °F | US Central |
-| New York | KLGA | °F | US East |
-| Miami | KMIA | °F | US Southeast |
-| Atlanta | KATL | °F | US Southeast |
-| London | EGLC | °C | UK |
-| Paris | LFPG | °C | France |
-| Toronto | CYYZ | °C | Canada |
+### Jonah
+
+```bash
+cd wbot-jonah
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+## Variaveis de ambiente
+
+Cada projeto tem um `.env.example` documentado. Abaixo o resumo completo.
+
+### Ruth (Sensor)
+
+| Variavel | Obrigatorio | Descricao |
+|----------|-------------|-----------|
+| `WENDY_URL` | Sim | URL interna de Wendy (`http://srv-captain--wendy:3000`) |
+| `RUTH_SECRET` | Sim | Segredo compartilhado (mesmo valor em Wendy/Jonah) |
+| `WU_API_KEY` | Sim | API key do Weather Underground para PWS |
+| `NOAA_POLL_MS` | Nao | Intervalo rapido de polling METAR (default: 3000) |
+| `PWS_POLL_MS` | Nao | Intervalo de polling PWS (default: 300000 = 5min) |
+| `JONAH_ENABLED` | Nao | Habilitar envio para Jonah (default: false) |
+| `JONAH_URL` | Nao | URL interna de Jonah |
+| `RUST_LOG` | Nao | Nivel de log (default: `wbot_ruth=info`) |
+
+### Wendy (Brain)
+
+| Variavel | Obrigatorio | Descricao |
+|----------|-------------|-----------|
+| `DATABASE_URL` | Sim | PostgreSQL connection string |
+| `RUTH_SECRET` | Sim | Segredo para auth service-to-service |
+| `JWT_SECRET` | Sim | Segredo para tokens JWT (Marty auth) |
+| `AUTH_PASSWORD` | Sim | Senha inicial do operador |
+| `POLY_API_KEY` | Sim* | Polymarket CLOB API key |
+| `POLY_SECRET` | Sim* | Polymarket CLOB secret |
+| `POLY_PASSPHRASE` | Sim* | Polymarket CLOB passphrase |
+| `POLY_PRIVATE_KEY` | Sim* | Private key da wallet (sem 0x) |
+| `POLY_ADDRESS` | Sim* | Endereco da wallet (com 0x) |
+| `MARTY_ORIGIN` | Sim | URL do Marty para CORS |
+| `RUTH_URL` | Nao | URL interna de Ruth (health check) |
+| `JONAH_URL` | Nao | URL interna de Jonah (predictions) |
+| `JONAH_DB_URL` | Nao | URL do Jonah DB (health check) |
+| `QDRANT_URL` | Nao | URL do Qdrant (health check) |
+| `PORT` | Nao | Porta do servidor (default: 3000) |
+| `LOG_LEVEL` | Nao | Nivel de log (default: info) |
+| `DRY_MODE` | Nao | Simular trades sem CLOB (default: false) |
+
+*Obrigatorio para trading real, pode ficar vazio em DRY_MODE.
+
+### Marty (Dashboard)
+
+| Variavel | Obrigatorio | Descricao |
+|----------|-------------|-----------|
+| `NEXT_PUBLIC_WENDY_URL` | Sim | URL **publica** de Wendy (browser acessa) |
+| `NEXT_PUBLIC_WENDY_WS_URL` | Sim | WebSocket URL de Wendy (`wss://...`) |
+
+**Nota:** Marty nunca acessa Jonah diretamente. Todas as chamadas sao proxied via Wendy.
+
+### Jonah (AI Analyst)
+
+| Variavel | Obrigatorio | Descricao |
+|----------|-------------|-----------|
+| `WENDY_URL` | Sim | URL interna de Wendy |
+| `RUTH_SECRET` | Sim | Segredo para auth (mesmo valor) |
+| `OPENAI_API_KEY` | Sim | API key da OpenAI (GPT-5) |
+| `GPT_MODEL` | Sim | Modelo a usar (default: gpt-5) |
+| `JONAH_DATABASE_URL` | Sim | PostgreSQL do Jonah (read-write) |
+| `DATABASE_URL` | Sim | PostgreSQL de Wendy (read-only, learning) |
+| `QDRANT_HOST` | Sim | Host do Qdrant |
+| `QDRANT_PORT` | Sim | Porta do Qdrant (default: 6333) |
+| `WEIGHT_LGBM` | Nao | Peso do LightGBM no ensemble (default: 0.30) |
+| `WEIGHT_CHRONOS` | Nao | Peso do Chronos (default: 0.25) |
+| `WEIGHT_OPENMETEO` | Nao | Peso do Open-Meteo (default: 0.20) |
+| `WEIGHT_RAG` | Nao | Peso do RAG (default: 0.25) |
+| `LEARNING_HOUR_UTC` | Nao | Hora UTC do learning loop (default: 6) |
+| `PORT` | Nao | Porta do servidor (default: 8000) |
+
+### Autenticacao entre servicos
+
+Todos os servicos internos usam o header `x-internal-secret` com o valor de `RUTH_SECRET`:
+
+```
+Ruth  --x-internal-secret--> Wendy
+Ruth  --x-internal-secret--> Jonah
+Jonah --x-internal-secret--> Wendy
+```
+
+Marty usa JWT via httpOnly cookie para autenticacao com Wendy.
+
+## Producao
+
+| Servico | URL publica | Host interno |
+|---------|-------------|--------------|
+| Wendy | `https://wendy.wozark.com` | `srv-captain--wendy:3000` |
+| Marty | `https://marty.wozark.com` | SPA exportada via nginx |
+| Ruth | interno | `srv-captain--ruth:8080` |
+| Jonah | interno | `srv-captain--jonah:8000` |
+| Wendy DB | interno + porta externa | `srv-captain--wbot-db:5432` |
+| Jonah DB | interno + porta externa | `srv-captain--jonah-db:5432` |
+| Qdrant | interno | `srv-captain--qdrant:6333` |
+
+## Health checks
+
+```bash
+bash scripts/health-check.sh
+ssh root@168.231.70.56 'bash -s' < scripts/health-check-internal.sh
+```
+
+`health-check.sh` verifica Wendy, Marty e a porta externa do PostgreSQL. `health-check-internal.sh` inclui Ruth, Jonah e a conectividade interna do banco.
+
+## Estacoes atuais
+
+As estacoes ativas vivem no codigo de Wendy/Jonah e hoje sao 10 aeroportos dos EUA:
+
+`KSEA`, `KLAX`, `KSFO`, `KDAL`, `KAUS`, `KHOU`, `KORD`, `KLGA`, `KMIA`, `KATL`
+
+## Observacoes
+
+- O `README` anterior ainda descrevia Marty como React/Vite e este repo como "orchestration" puro; o workspace atual inclui os subrepos locais.
+- O documento `docs/2026-03-23-v5-architecture-design.md` e historico e nao reflete todas as mudancas posteriores.
+- O schema de banco mais atual permanece em `docs/database-schema.md`.
