@@ -17,17 +17,20 @@ Wozark is a weather temperature auto-trading system for Polymarket. It consists 
 ```
 Ruth (Rust/Axum)       Wendy (TypeScript/Fastify)      Marty (React/Vite)       Jonah (Python/FastAPI)
 Sensor                 Brain                            Dashboard                Analyst (V5 Ensemble)
-├─ METAR dual-hour poll├─ Threshold detection (upward)  ├─ Mobile-first shadcn    ├─ 4-source ensemble:
-├─ PWS 5min poll       ├─ Trading guards                ├─ Station detail + METAR │  LightGBM, Chronos,
+├─ METAR dual-hour poll├─ Jonah-gated METAR execution   ├─ Mobile-first shadcn    ├─ 4-source ensemble:
+├─ PWS 5min poll       ├─ Observe-only METAR mode       ├─ Station detail + METAR │  LightGBM, Chronos,
 ├─ Dynamic station list├─ CLOB API wrapper (dynamic fee)├─ Positions + P&L        │  Open-Meteo, RAG
-├─ Retry buffer (30s)  ├─ PayloadCache + /trigger       ├─ Breadcrumb navigation  ├─ GPT-5 independent predictor
-                       ├─ PWS data → Jonah buffer       └─ Auto-refresh (30s/60s) ├─ Range detection + timing
-                       ├─ Kill switch (tradingEnabled)                            ├─ Qdrant RAG (auto-learning)
-                       ├─ Rate limiting (login/trading)                            ├─ POST /trigger → Wendy
-                       ├─ FOK → GTC fallback                                      └─ Advisory → Wendy
-                       ├─ httpOnly JWT cookies
-                       ├─ WebSocket push → Marty
-                       └─ PostgreSQL logging
+├─ Retry buffer (30s)  ├─ PayloadCache + /trigger       ├─ Learning monitor       ├─ GPT-5 final decision-maker
+                       ├─ PWS anticipation (strict)     ├─ Jonah heartbeat        ├─ METAR-driven 55min cycle
+                       ├─ Kill switch (tradingEnabled)  ├─ Feed state (live/stale)├─ Pre-METAR predictions
+                       ├─ Rate limiting (login/trading) ├─ "Predict Now" button   ├─ Floor enforcement
+                       ├─ confirmedBuckets bypass       ├─ GPT-5 reasoning panel  ├─ Qdrant RAG (auto-learning)
+                       ├─ FOK fill via getOrder()       └─ Auto-refresh (30s/60s) ├─ Intraday drift learning
+                       ├─ httpOnly JWT cookies                                    ├─ Nightly learning loop
+                       ├─ Learning/metrics proxy                                  ├─ POST /trigger → Wendy
+                       ├─ WebSocket push → Marty                                  ├─ LightGBM 10 stations
+                       └─ PostgreSQL logging                                      │  18,594 samples (5yr IEM)
+                                                                                  └─ Heartbeat + status
 ```
 
 ## Projects
@@ -43,14 +46,20 @@ Each project has its own `CLAUDE.md` with detailed instructions. Open Claude in 
 
 ## Communication
 
+**Internal auth:** All internal service-to-service calls use header `x-internal-secret: <RUTH_SECRET>` (standardized 2026-03-31).
+
 ```
-Ruth → Wendy:  HTTP POST /signal (raw METAR + PWS data, auth: RUTH_SECRET)
-Ruth → Jonah:  HTTP POST /signal (copy, JONAH_ENABLED toggle, fire-and-forget)
-Jonah → Wendy: HTTP POST /prediction (advisory — logged + broadcast)
-Jonah → Wendy: HTTP POST /trigger (trade execution, timing thresholds 30/40/55%)
+Ruth → Wendy:  HTTP POST /signal (raw METAR + PWS data, auth: x-internal-secret)
+Ruth → Jonah:  HTTP POST /signal (copy, JONAH_ENABLED toggle, fire-and-forget, auth: x-internal-secret)
+Jonah → Wendy: HTTP POST /prediction (advisory — logged + broadcast, auth: x-internal-secret)
+Jonah → Wendy: HTTP POST /trigger (trade execution when confidence >= 70%, auth: x-internal-secret)
 Wendy → Marty: WebSocket push (real-time events) + REST API (JWT auth)
 Marty → Wendy: REST commands (buy, sell, settings) with JWT
-Marty → Wendy → Jonah: POST /predictions/refresh/:station (manual refresh proxy)
+Marty → Wendy → Jonah: GET /predictions/latest/:station (load latest prediction on mount)
+Marty → Wendy → Jonah: GET /predictions/run/:station (manual predict — sends observed temps)
+Marty → Wendy → Jonah: GET /learning/metrics (RAG accuracy, source errors, daily stats)
+Marty → Wendy → Jonah: POST /learning/run (manual learning trigger for specific date)
+Marty → Wendy → Jonah: GET /learning/debug (learning resolution diagnostics)
 ```
 
 **Internal (container-to-container):**
@@ -90,18 +99,17 @@ Marty → Wendy → Jonah: POST /predictions/refresh/:station (manual refresh pr
 1. Ruth polls NOAA adaptively (60s normal, 3s in ±5min window near expected METAR) → POST /signal to Wendy
 2. Ruth polls WU API every 5min → captures 3 PWS per airport → POST /signal {type:"PWS"} to Wendy
 3. Ruth also sends METAR+PWS signals to Jonah (fire-and-forget)
-4. Jonah runs 4-source ensemble (LightGBM + Chronos + Open-Meteo + RAG) + GPT-5 independent predictor at dawn (6am local), then updates every 30min (or 5min near peak) from 10am to peak_end
-5. Jonah sends range prediction + timing signal (WAIT/SMALL/MEDIUM/STRONG) → POST /prediction to Wendy
-5b. When timing is SMALL/MEDIUM/STRONG (thresholds 30/40/55%), Jonah fires POST /trigger to Wendy for trade execution (max 1 bucket above current METAR)
-6. Wendy receives METAR → updates running max → detects upward threshold crossing → evaluates guards → executes trade on CLOB
-7. Wendy receives PWS → buffers data → feeds to Jonah for ensemble analysis (PWS no longer trades autonomously)
+4. Jonah runs full ensemble + GPT-5 at dawn (6am local) for initial prediction. After that, each METAR arrival starts a 55min timer — when it fires, Jonah runs 4-source ensemble (LightGBM + Chronos + Open-Meteo + RAG) in parallel, then GPT-5 receives all raw data (METAR + PWS + solar/UV + slopes + model outputs) and makes the final bucket/timing decision. Ensemble is fallback if GPT-5 fails. Floor enforcement: predicted bucket can never be below observed running max. GPT-5 output is canonicalized to valid even-odd market buckets.
+4b. Pre-METAR predictions: ~5min before expected next METAR, Jonah uses PWS gap + slope to predict if bucket will cross. Records both crossing and non-crossing evaluations for learning.
+5. Jonah sends range prediction + timing signal (WAIT/SMALL/MEDIUM/STRONG) → POST /prediction to Wendy (advisory, logged + broadcast). Phase normalized: dawn→briefing, update→peak_update.
+5b. When timing is MEDIUM or STRONG (confidence >= 70%), Jonah fires POST /trigger to Wendy for trade execution. Trigger sanity check: won't rotate to a bucket with lower confidence than the previous trigger.
+6. Wendy receives METAR → updates running max → observe-only mode (logs threshold crossing, waits for Jonah confirmation via pre_metar phase match within 20min). metarTradingEnabled flag controls this gate.
+7. Wendy receives PWS → calculates anticipation (gap/conf/ramp) → if STRONG → executes anticipation BUY
 8. Wendy broadcasts all events (including AI predictions) to Marty via WebSocket
 9. Marty displays real-time: station cards, positions, logs, trace timelines, AI insights
 ```
 
-## Anticipation Formula (PWS → predicted temperature, reference only)
-
-PWS data now feeds to Jonah only — no autonomous trading from PWS signals.
+## Anticipation Formula (PWS → predicted temperature)
 
 ```
 T_pws       = median(PWS readings)
@@ -111,24 +119,26 @@ ramp        = linear regression of medians over last 10min
 α           = station.pwsAlpha (0.5-0.8)
 β           = 0.3
 T_estimated = T_metar + (gap * conf * α) + (ramp * β)
+
+STRONG:   gap > 2°F AND conf > 0.7 → BUY (never ROTATE on anticipation)
+MODERATE: gap > 1°F AND conf > 0.6 → log alert only
+WEAK:     ignore
 ```
 
 ## Trading Rules
 
-- METAR is authority — only METAR triggers ROTATE
-- METAR and Jonah trade independently — METAR buys confirmed crossings, Jonah buys predictions. Multiple positions per station are valid.
+- METAR observe-only: Wendy detects threshold but waits for Jonah pre_metar confirmation (metarTradingEnabled gate)
+- Jonah /trigger is primary trade executor (BUY/ROTATE based on ensemble + GPT-5)
 - ROTATE: BUY first, then SELL + harvest parallel (if BUY succeeds)
-- Jonah trigger: BUY or upward ROTATE (downward ROTATE blocked)
-- Jonah trigger: max 1 bucket above current METAR (4°F for F stations, 2°C for C stations)
-- Jonah exit: SELL when triggered bucket confidence drops below 20% (SELL_THRESHOLD = 0.20)
-- PWS is data-only — feeds Jonah ensemble buffer, no autonomous trading
+- PWS anticipation: BUY only (never ROTATE)
+- /trigger supports ROTATE when existing position in different bucket
+- 95%+ confidence triggers can bypass early trading window
 - Before 7am local → skip
-- Price floor: 5c (gamma < 5% → skip), ceiling: >= 75% → skip
-- Spread guard removed — no longer needed
+- Gamma < 10% → skip, >= 75% → skip
+- Spread guard: > 6c = skip
 - Book liquidity check before every trade
 - Daily loss limit ($20 default)
-- FOK verification fast-path (matched = instant, no polling)
-- FOK → GTC fallback for delayed orders (5 attempts × 1s verify)
+- FOK verification always via getOrder() (never trust "matched" status alone — phantom fill prevention)
 - Dynamic feeRateBps/tickSize/negRisk per market (no hardcoded values)
 - tradingEnabled=false is absolute kill switch (blocks ALL orders)
 - No stop-loss — hold until resolution
@@ -180,8 +190,30 @@ Each has its own CLAUDE.md with complete context.
 | POST | /trigger | RUTH_SECRET | Jonah fires trade (BUY/ROTATE) |
 | GET | /data/:station | JWT | Meteorological data (METAR + PWS) |
 | GET | /stations/config | RUTH_SECRET | Station list for Ruth polling |
+| GET | /predictions/latest/:station | JWT | Latest Jonah prediction for station (proxy) |
+| GET | /predictions/run/:station | JWT | Manual predict — sends observed temps to Jonah (proxy) |
+| GET | /learning/metrics | JWT | Jonah learning stats: accuracy, source errors, daily (proxy) |
+| POST | /learning/run | JWT | Trigger manual learning for target_date (proxy) |
+| GET | /learning/debug | JWT | Learning resolution diagnostics (proxy) |
 | GET | /system/status | JWT | System status including Jonah DB |
 | WS | /ws?token=JWT | JWT | Real-time push events (also ?token= query param) |
+
+## Jonah API (internal, auth: x-internal-secret)
+
+| Method | Endpoint | Returns |
+|--------|----------|---------|
+| POST | /signal | METAR/PWS ingestion from Ruth |
+| GET | /predictions | All stations' current predictions |
+| GET | /predictions/{station} | Prediction + heartbeat + evolution |
+| POST | /predict/{station} | Manual prediction (no trade, phase=manual) |
+| POST | /predictions/refresh | Force refresh all stations |
+| GET | /pre-metar | Current pre-METAR predictions |
+| GET | /learning/metrics?days=&station= | Accuracy stats, source errors, RAG size |
+| GET | /learning/debug?target_date=&station= | Resolution diagnostics per date |
+| POST | /admin/learning?target_date= | Manual learning trigger |
+| GET | /health | Health + accuracy stats |
+| GET | /status | System status (sources, pipeline, pre-METAR) |
+| GET | /logs?limit=&level=&search= | In-memory log buffer |
 
 ## Critical Rules
 

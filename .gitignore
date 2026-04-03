@@ -6,3 +6,4 @@ wbot-jonah/
 
 # Local settings (may contain secrets)
 .claude/settings.local.json
+.omc/
