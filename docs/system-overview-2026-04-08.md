@@ -1,579 +1,801 @@
-# Wozark V5 — System Overview (2026-04-08)
+# Wozark V5 — System Overview (auditado contra o codigo em 2026-04-08)
 
-Este documento reflete o estado REAL do sistema hoje — extraído do código, não do planejamento.
+Este documento foi reconciliado com o codigo atual dos quatro subprojetos:
 
----
+- `wbot-ruth/`
+- `wbot-wendy/`
+- `wbot-jonah/`
+- `wbot-marty/`
 
-## Arquitetura
-
-```
-Ruth (Rust)          → sensor: METAR + PWS
-  ↓ POST /signal
-Wendy (TypeScript)   → cérebro: decisões + execução CLOB
-  ↓ WebSocket
-Marty (React)        → dashboard em tempo real
-
-Jonah (Python)       → IA: ensemble + GPT-5
-  ↓ POST /trigger + /prediction
-Wendy               → executa trade
-```
+Quando havia conflito entre texto antigo e implementacao, prevaleceu o codigo. Onde o codigo ainda esta inconsistente ou deixa brechas de negocio/contrato, isso esta marcado como risco aberto.
 
 ---
 
-## 1. Ruth — Sensor (Rust/Axum)
+## 0. Resumo Executivo
 
-### METAR Polling
+Arquitetura operacional atual:
 
-- URL: `https://tgftp.nws.noaa.gov/data/observations/metar/stations/{ICAO}.TXT`
-- Intervalo **adaptativo**: `3s` dentro da janela ±5min do METAR esperado, `60s` fora
-- Aprende o minuto do último METAR (ex: `:53`) e cria janela `[48, 58]`
-- Dedup por chave `ICAO:DDHHMMz` — HashSet resetada a cada hora UTC
-- METAR = **ground truth**. Qualquer SPECI no arquivo é capturado automaticamente
+```text
+Ruth  -- POST /signal ----------> Wendy -- REST/WS ----------> Marty
+  \                                ^
+   \-- POST /signal (copia) ----> Jonah -- /prediction -----> Wendy
+                                      \-- /trigger ---------> Wendy
+```
 
-### PWS Polling
+Estado geral verificado:
 
-- Intervalo fixo: `300s` (5 min)
-- API: Weather Underground v2 (`/pws/observations/current`)
-- 3 PWS por aeroporto, em paralelo via tokio::spawn
+- Ruth e um sensor puro, mas com resiliencia local: circuit breaker, retry buffer e copia fire-and-forget para Jonah.
+- Wendy e a fonte central de estado operacional, execucao de trades, logs, WebSocket e configuracao.
+- Jonah roda ensemble de 4 fontes, usa GPT-5 como decisor final com cap de divergencia e envia previsoes/gatilhos para Wendy.
+- Marty fala apenas com Wendy via REST e WebSocket autenticado por JWT.
+- No modo de producao auditado em `2026-04-08`, a execucao automatica esta restrita a METAR; triggers AI seguem acumulando learning e alimentando `/prediction`, mas ficam bloqueados por default com `AI_TRADING_ENABLED=false`.
 
-### Payload enviado ao Wendy (METAR)
+Principais divergencias encontradas entre o documento anterior e o codigo:
+
+1. O limite de salto do `/trigger` nao e "1 bucket"; o codigo permite ate `+6°F` ou `+3°C`.
+2. O cutoff de mercado "resolvido" nao e unico:
+   - `0.90` no Jonah para cortar GPT/trigger
+   - `0.95` no Wendy para short-circuit de fluxos METAR/PWS
+   - `1.00` no `runGuards()`
+3. O campo `metarCadence` citado no documento anterior nao existe mais no `SignalService`.
+4. O documento anterior expunha credenciais de banco em texto claro; isso foi removido.
+5. O fluxo AI agora bloqueia trigger com `negative_ev` e `station_underperforming`, usando `range_prob` + perfil de learning da estacao.
+6. Jonah agora aplica pesos adaptativos por fonte/estacao a partir de `learning_outcomes`, sem depender de retrain do LightGBM.
+7. Wendy expoe analytics de entradas resolvidas em `GET /analytics/entries`, com cortes por estacao, hora local, signal type e faixa de preco.
+
+---
+
+## 1. Arquitetura Verificada
+
+### Servicos
+
+| Servico | Stack | Papel real |
+| --- | --- | --- |
+| Ruth | Rust + Tokio + Reqwest | Captura METAR e PWS, envia para Wendy e opcionalmente para Jonah |
+| Wendy | TypeScript + Fastify 5 + Drizzle | Estado de trading, guards, CLOB, API publica e WS |
+| Jonah | Python + FastAPI + APScheduler | Predicao, learning, RAG, GPT-5, triggers consultivos |
+| Marty | Next.js + React 19 + Zustand | Dashboard operacional |
+
+### Autenticacao entre servicos
+
+Todos os trafegos internos entre Ruth, Wendy e Jonah usam `x-internal-secret` com o valor de `RUTH_SECRET`.
+
+No login, Wendy seta cookie `httpOnly`, mas Marty opera principalmente com Bearer token em REST e `?token=` no handshake do WebSocket.
+
+### Estacoes ativas
+
+As 10 estacoes ativas no codigo atual sao:
+
+`KSEA`, `KLAX`, `KSFO`, `KDAL`, `KAUS`, `KHOU`, `KORD`, `KLGA`, `KMIA`, `KATL`
+
+---
+
+## 2. Ruth — Sensor
+
+Arquivos-chave auditados:
+
+- `wbot-ruth/src/config.rs`
+- `wbot-ruth/src/metar/poller.rs`
+- `wbot-ruth/src/metar/parser.rs`
+- `wbot-ruth/src/pws/poller.rs`
+- `wbot-ruth/src/sender.rs`
+
+### Config e janelas
+
+- Ruth busca a lista de estacoes em Wendy via `GET /stations/config`.
+- Polling so roda dentro da janela local `04:00 <= hora < 22:00`.
+- Defaults atuais:
+  - `NOAA_POLL_MS = 3000`
+  - `PWS_POLL_MS = 300000`
+
+### METAR polling
+
+- Cada estacao e consultada individualmente em paralelo.
+- Polling adaptativo:
+  - rapido: `poll_ms` (default `3s`)
+  - lento: `60s`
+- Enquanto ainda nao aprendeu o minuto de chegada do METAR, fica em polling rapido.
+- A janela adaptativa usa o minuto em que Ruth detectou o ultimo METAR, nao o minuto reportado no token `DDHHMMZ`.
+- Deduplicacao por chave `ICAO:DDHHMMZ`, com limpeza do `seen` a cada hora UTC.
+
+### PWS polling
+
+- Polling fixo por `poll_ms` (default `300s`).
+- Para cada aeroporto, os PWS sao buscados em paralelo via `join_all`.
+- Se nenhum PWS retornar leitura valida no ciclo, nada e enviado.
+
+### Contrato de payload
+
+Observacao importante de contrato:
+
+- O topo do payload METAR sempre sai como `type: "METAR"`.
+- Quando o raw e `SPECI`, isso vai no campo `metarType: "SPECI"`.
+- Ou seja: nenhum consumidor deve esperar `type: "SPECI"` no discriminador do JSON.
+
+Campos relevantes do payload METAR aceito por Wendy:
 
 ```json
 {
   "type": "METAR",
   "station": "KSEA",
   "tempC": 10.5,
-  "tempF": 50.9,
-  "dewpointC": 8.2,
-  "humidityPct": 85,
-  "windDeg": 180,
-  "windKt": 12,
-  "gustKt": 18,
-  "visibilityM": 10000,
-  "cloudLayers": [{ "cover": "BKN", "altitude": 1500 }],
-  "pressureHpa": 1013.2,
-  "metarRaw": "KSEA 291856Z ...",
+  "tempF": 51,
+  "metarType": "METAR",
+  "metarRaw": "KSEA 071856Z ...",
   "metarTime": "2026-04-07T18:56:00Z",
   "capturedAt": "2026-04-07T18:56:00.123Z",
   "traceId": "ruth-metar-ksea-20260407-185600123"
 }
 ```
 
-### Resiliência
-
-- **Circuit breaker:** 10 falhas consecutivas → 30s backoff
-- **Retry buffer:** max 20 items, TTL 30s — drena ao reconectar com Wendy
-- Jonah recebe cópia fire-and-forget (não bloqueia o path principal)
-
----
-
-## 2. Wendy — Brain (TypeScript/Fastify 5)
-
-### Estado por estação (em memória)
-
-```typescript
-{
-  runningMaxC: number          // máximo do dia — NUNCA desce
-  lastTempC: number            // último METAR recebido
-  lastBucket: string | null    // último bucket operado
-  lastTokenId: string | null   // tokenId do bucket atual
-  confirmedBuckets: Set        // buckets já comprados hoje
-  lastDate: string | null      // YYYY-MM-DD local da estação
-  lastMetarAt: Date | null
-  anticipatedPosition: {...}   // posição PWS esperando confirmação METAR
-  metarCadence: number | null  // EMA dos gaps entre METARs (segundos) — α=0.3, ignora gaps <120s ou >7200s
-}
-```
-
-`metarCadence` é calculado a cada METAR recebido e exposto via `getMetarCadence()` (retorna 3600 como default). **O getter nunca é chamado em nenhum lugar do código.** Candidato a remoção ou uso no heartbeat de estação (ex: detectar METAR atrasado quando `now - lastMetarAt > metarCadence * 1.5`).
-
-```typescript
-
-```
-
-### getBucket — Algoritmo de Bucket (temperature.ts)
-
-Converte temperatura °C → bucket de mercado (par even-odd em °F):
-
-```typescript
-cToF(c) = c * 9/5 + 32
-
-getFBucket(tempC):
-  f   = Math.round(cToF(tempC))       // ARREDONDAMENTO, não floor
-  low = f % 2 === 0 ? f : f - 1       // snapa para o par mais próximo abaixo
-  return { low, high: low + 1 }       // ex: 70-71°F, 72-73°F
-
-// Exemplos:
-// 21.1°C → 70.0°F → f=70 (par) → bucket 70-71°F
-// 21.7°C → 71.1°F → f=71 (ímpar) → low=70 → bucket 70-71°F
-// 22.2°C → 72.0°F → f=72 (par) → bucket 72-73°F
-// 21.4°C → 70.5°F → f=71 (Math.round) → low=70 → bucket 70-71°F
-```
-
-**Ponto crítico:** usa `Math.round`, não `Math.floor`. Isso significa que 21.4°C (70.5°F) vai para o bucket 70-71°F, não 68-69°F. A fronteira efetiva entre buckets está em `.5°F`, não em valores inteiros.
-
-### Fluxo METAR (signal.service.ts)
-
-1. Salvar no DB (fire-and-forget)
-2. Broadcast `new_metar` → Marty
-3. **Day change detection** → reset runningMaxC, lastBucket, confirmedBuckets
-4. Atualizar `runningMaxC = Math.max(runningMaxC, tempC)` (monotônico)
-5. Calcular bucket via `getBucket(runningMaxC, station)` — usa o **máximo**, não temp atual
-6. **Threshold crossing** (apenas upward — se bucket > lastBucket):
-   - Primeiro METAR do dia → baseline, sem trade
-   - Jonah já comprou este bucket → SKIP
-   - Jonah comprou bucket diferente + METAR > Jonah bucket → ROTATE UP
-   - Sem posição Jonah → **BUY confirmativo**
-7. **Dead bucket guard (2026-04-08):** se `yesPrice < $0.05` → skip com reason `dead_bucket_metar` (mercado descartou o bucket antes do METAR confirmar)
-8. Rodar guards antes de qualquer trade
-9. **Cascade guard (2026-04-08):** no path de ROTATE, conta posições abertas da estação. Se > 1 → skip com reason `cascade_guard` (posição órfã de SELL falho anterior)
-10. Executar BUY ou ROTATE
-11. Broadcast `trade_executed` → Marty
-
-### Fluxo PWS (anticipation.service.ts)
-
-PWS é **data-only**. Não gera trades autônomos.
-
-- Alimenta buffer do Jonah via `/signal {type: "PWS"}`
-- Jonah usa os dados para ensemble e pre-METAR prediction
-
-### ROTATE (rotate.service.ts)
-
-```
-1. BUY novo bucket (await — deve ter sucesso)
-2. Se BUY falha → return (posição fica no bucket antigo)
-3. Se BUY sucede:
-   a. Verificar bid do bucket antigo
-   b. Se bid < $0.03 → skip SELL (bucket morto, sem compradores)
-   c. Caso contrário → SELL antigo
-4. Broadcast resultado
-```
-
-### Guards (guards.ts) — thresholds reais
-
-| Guard                    | Condição de bloqueio                         |
-| ------------------------ | -------------------------------------------- |
-| `outside_trading_window` | hora local < peakRange[0] ou >= peakRange[1] |
-| `market_resolved`        | yesPrice >= $1.00                            |
-| `price_out_of_range`     | yesPrice < $0.05 ou >= $0.75                 |
-| `border_zone`            | yesPrice entre $0.45 e $0.55                 |
-| `no_book_liquidity`      | bids.length === 0                            |
-| `spread_too_wide`        | spread > $0.06                               |
-| `daily_loss_exceeded`    | dailySpend >= maxDailyLoss                   |
-| `trade_locked`           | station:bucket já em execução                |
-
-### Fluxo /trigger (Jonah → Wendy)
-
-1. Validar station enabled, trading enabled
-2. Fetch tokenId da PayloadCache
-3. Edge bucket fallback: se bucket exato não existe → tenta "X°F or higher"
-4. Rodar guards
-5. **Max 1 bucket jump**: Jonah pode trigger no máximo 1 bucket (2°F) acima do METAR atual
-6. Downward ROTATE bloqueado
-7. Sanity check: não rotacionar para bucket com confidence < trigger anterior
-8. BUY ou ROTATE
-9. Salvar resultado em DB (`jonah_triggers`)
-
-### SELL_STRANDED (signal.service.ts)
-
-Quando `price_out_of_range` bloqueia uma ROTATE:
-
-1. Verificar bid do bucket antigo
-2. Se bid < $0.03 → log "worthless, abandoning" — não tenta vender
-3. Se bid >= $0.03 → tentar SELL do bucket perdedor
-
-### PayloadCache (payload-cache.ts)
-
-- Carga na startup + reload a cada **30 minutos**
-- Fresh Maps por reload (evita tokenIds de dia anterior)
-- `fire(station, bucket)`: merge payload estático + fresh book snapshot
-
-### Monitor (monitor.service.ts) — tick a cada 3 min
-
-1. Refresh price snapshots
-2. Detectar posições duplicadas (agrupa por `station:tokenId`)
-3. Manter maior posição, agendar SELL retry para o resto
-4. SELL retries: max 3 tentativas, terminal errors (allowance/balance) drop imediato
-
----
-
-## 3. Jonah — Analyst (Python/FastAPI)
-
-### Ensemble (4 fontes)
-
-| Fonte      | Peso     | Descrição                                       |
-| ---------- | -------- | ----------------------------------------------- |
-| LightGBM   | **0.20** | 7 modelos quantile, 18.594 samples IEM (5 anos) |
-| Chronos    | 0.25     | Amazon time-series, forecast 48h                |
-| Open-Meteo | **0.30** | NWP grid forecast (API gratuita)                |
-| RAG        | 0.25     | Qdrant: dias similares, 18.250 pontos           |
-
-**Rebalanceamento 2026-04-08:** Open-Meteo elevado de 0.20 → 0.30 (viés -1 a +2°F, mais preciso empiricamente). LightGBM reduzido de 0.30 → 0.20 (sobre-estima sistematicamente +3 a +10°F).
-
-**Cada fonte retorna:** `{temp: int → prob: float}` — distribuição de probabilidade
-
-**Combinação:**
-
-```python
-combined[temp] += prob * weight  # soma ponderada
-combined = renormalize(combined)
-```
-
-**Floor enforcement (corrigido 2026-04-08):**
-
-```python
-bucket_width = 2  # para °F
-removed = {k: v for k, v in combined.items() if k + bucket_width <= observed_max}
-# bucket k só é removido se TODA a faixa [k, k+2) já foi ultrapassada
-# ANTES (bug): int(observed_max) removia o bucket atual
-```
-
-### GPT-5 — Final Decision-Maker
-
-**Recebe:**
-
-- METAR history (últimas 24h)
-- PWS readings (últimos 60 min)
-- Solar radiation, UV, slopes (1h, 15min)
-- Saídas do ensemble (com confidence de cada fonte)
-- Running max observado
-- **Preços do Polymarket** (crowd consensus)
-- NWS grid forecasts + AFD products
-
-**Config:**
-
-- Modelo: `gpt-5`
-- `max_completion_tokens`: 16384
-- `response_format`: json_object
-- Timeout: 60s
-- GPT **override** ensemble — ensemble é fallback se GPT falhar
-- **Divergence cap (2026-04-08):** se GPT-5 divergir > 4°F (2 buckets) do ensemble → descarta GPT-5, usa ensemble. Evita casos onde prior da cidade destrói sinal correto em dias atípicos
-
-**Output:**
+Campos relevantes do payload PWS aceito por Wendy:
 
 ```json
 {
-  "bucket": "64-65°F",
-  "timing": "STRONG",
-  "confidence": 0.82,
-  "reasoning": "..."
+  "type": "PWS",
+  "station": "KSEA",
+  "readings": [
+    {
+      "pwsId": "KWASEATT2476",
+      "tempF": 58.7,
+      "solarRadiation": 542,
+      "uv": 4.1
+    }
+  ],
+  "capturedAt": "2026-04-07T18:56:00.123Z",
+  "traceId": "ruth-pws-ksea-20260407-185600123"
 }
 ```
 
-### Timing Signals
+### Resiliencia
 
-| Signal        | Threshold  | Comportamento                  |
-| ------------- | ---------- | ------------------------------ |
-| STRONG        | >= 55%     | Dispara /trigger               |
-| MEDIUM        | >= 40%     | Dispara /trigger               |
-| SMALL         | >= 30%     | Advisory apenas (sem trigger)  |
-| WAIT          | < 30%      | Sem ação                       |
-| **Pre-METAR** | **>= 70%** | Threshold maior (anticipatory) |
+- Circuit breaker:
+  - abre apos `10` falhas consecutivas
+  - backoff de `30s`
+- Retry buffer:
+  - max `20` payloads
+  - TTL `30s`
+- Se `JONAH_ENABLED=true`, Ruth envia copia fire-and-forget do mesmo payload para `Jonah /signal`.
 
-### Ciclo :48 (APScheduler cron)
+---
 
-- Roda exatamente às :48 de cada hora UTC
-- Para cada estação dentro do `peak_range` local:
-  - Sem dawn prediction hoje → `run_dawn()` (primeira predição)
-  - Status `active` → `_pre_metar_prediction()` (update antes do próximo METAR)
-- Jonah escolheu :48 pois METARs típicos chegam ~:53 → 5 min de antecedência
+## 3. Wendy — Brain / Executor
 
-### Pre-METAR Prediction
+Arquivos-chave auditados:
 
-Executada no ciclo :48 para estações ativas:
+- `wbot-wendy/src/modules/signal/signal.service.ts`
+- `wbot-wendy/src/modules/signal/anticipation.service.ts`
+- `wbot-wendy/src/modules/signal/prediction.route.ts`
+- `wbot-wendy/src/shared/guards.ts`
+- `wbot-wendy/src/modules/rotate/rotate.service.ts`
+- `wbot-wendy/src/modules/monitor/monitor.service.ts`
+- `wbot-wendy/src/shared/clob/payload-cache.ts`
 
+### Estado em memoria por estacao
+
+Estado real do `SignalService`:
+
+```ts
+{
+  runningMaxC: number
+  lastTempC: number
+  maxTempC6h: number | null
+  lastBucket: string | null
+  lastTokenId: string | null
+  confirmedBuckets: Set<string>
+  lastDate: string | null
+  lastMetarAt: Date | null
+  anticipatedPosition: {
+    bucketLabel: string
+    normalizedBucket: string
+    tokenId: string
+    shares: number
+    traceId: string
+  } | null
+}
 ```
-gap = median(PWS_últimos_10min) - T_metar_last
-slope_15m = regressão linear dos PWS últimos 15min (°/hora)
-T_estimado = T_metar + gap × 0.7 + slope_15m × (5min/60)
-bucket_estimado = getBucket(T_estimado)
+
+Nao existe mais:
+
+- `metarCadence`
+- `getMetarCadence()`
+
+O documento anterior tratava isso como se ainda estivesse no runtime. Nao esta.
+
+### Bucketizacao
+
+Para mercados Fahrenheit, Wendy usa `Math.round()` antes de snap para bucket par-impar:
+
+```ts
+f = Math.round(c * 9 / 5 + 32)
+low = f % 2 === 0 ? f : f - 1
+label = `${low}-${low + 1}°F`
 ```
 
-- Requer **confidence >= 70%** para disparar /trigger
-- Grava avaliação (crossing e non-crossing) para learning
+Exemplo:
 
-### RAG (Retrieval-Augmented Generation)
+- `21.4°C` -> `70.5°F` -> `Math.round = 71` -> bucket `70-71°F`
 
-**Qdrant** — 18.250 pontos (5 anos, 10 estações)
+### Fluxo `POST /signal` para METAR
 
-Cada ponto armazena:
+Fluxo real de `processMetar()`:
 
+1. Valida se a estacao esta habilitada.
+2. Salva METAR no banco em fire-and-forget.
+3. Broadcast `new_metar` para Marty.
+4. Detecta mudanca de dia local e reseta:
+   - `runningMaxC`
+   - `lastTempC`
+   - `maxTempC6h`
+   - `lastMetarAt`
+   - `lastBucket`
+   - `lastTokenId`
+   - `confirmedBuckets`
+   - `anticipatedPosition`
+5. Atualiza:
+   - `lastTempC = temp atual`
+   - `lastMetarAt = now`
+   - `runningMaxC = max(runningMaxC, temp atual)`
+6. Valida eventual posicao antecipada de PWS.
+7. Se algum mercado do evento ja estiver `>= 0.95`, encerra o fluxo sem trade.
+8. Calcula bucket pelo `runningMaxC`, nao pela temperatura atual.
+9. Se o bucket nao mudou, so loga e retorna.
+10. Se o bucket desceu, apenas atualiza tracking; nao dispara trade.
+11. No primeiro METAR do dia/restart, faz baseline e retorna.
+12. Decide entre:
+    - `SKIP` se o pre-METAR ja esta no mesmo bucket
+    - `HOLD` se METAR veio igual/abaixo do bucket comprado antes
+    - `ROTATE` se METAR confirmou bucket acima do pre-METAR
+    - `BUY` confirmativo se nao havia posicao pre-METAR
+13. Faz fallback de bucket extremo (`or higher` / `or lower`) se necessario.
+14. Aplica guard de bucket morto para entrada confirmativa:
+    - se `yesPrice < 0.05`, retorna `dead_bucket_metar`
+15. Busca payload/order book e roda guards.
+16. Se for ROTATE:
+    - bloqueia cascata se houver mais de uma posicao aberta na estacao
+    - compra bucket novo primeiro
+    - so depois tenta vender o antigo
+17. Broadcasts e persistencia de trade sao feitos nos services de BUY/SELL.
+
+### SELL_STRANDED
+
+Quando uma rotacao METAR e bloqueada por `price_out_of_range`:
+
+1. Wendy tenta vender a posicao antiga mesmo assim.
+2. Se o `bid` antigo for `< 0.03`, abandona a venda.
+3. Se houver posicao real e `bid >= 0.03`, executa `SELL_STRANDED`.
+
+### Fluxo PWS em Wendy
+
+O PWS nao opera autonomamente hoje, mas nao e apenas "data-only" no sentido estrito.
+
+O que `AnticipationService` realmente faz:
+
+- persiste snapshot PWS em `pws_observations`
+- mantem historico de 15 min em memoria
+- mantem `pwsPeaks` diarios por `pwsId`
+- broadcasta `pws_update` para Marty
+- calcula:
+  - `gap`
+  - `conf`
+  - `ramp`
+  - `score`
+  - `strength`
+  - `tEstimated`
+  - `predicted bucket`
+
+O que ele nao faz:
+
+- nao chama BUY
+- nao chama ROTATE
+- nao dispara ordem alguma
+
+Observacao importante:
+
+- O feed para Jonah nao sai de Wendy.
+- Quem envia PWS para Jonah e o proprio Ruth, via copia fire-and-forget em `sender.rs`.
+
+### Guards realmente ativos
+
+`runGuards()` hoje bloqueia por:
+
+| Reason | Regra real |
+| --- | --- |
+| `outside_trading_window` | hora local fora do `peakRange` |
+| `resolved` | `yesPrice >= 1.0` |
+| `price_out_of_range` | `yesPrice < 0.05` ou `yesPrice >= 0.75` |
+| `pws_price_too_high` | apenas se `signalType === "PWS"` e `yesPrice >= 0.70` |
+| `border_zone` | temperatura em zona de fronteira |
+| `no_book_liquidity` | `book` ausente ou sem bids |
+| `daily_loss_exceeded` | apenas quando `!isRotate` |
+| `trade_locked` | `station:bucket` ja em execucao |
+
+O que existe no arquivo, mas nao esta sendo aplicado:
+
+- `isSpreadTooWide()`
+- `MAX_SPREAD = 0.06`
+- reason `spread_too_wide`
+
+No codigo atual auditado, esse guard ja esta ativo em `runGuards()`.
+
+### Fluxo `POST /trigger` (Jonah -> Wendy)
+
+Fluxo real:
+
+1. Autentica `x-internal-secret`.
+2. Valida `TriggerSchema`.
+3. Bloqueia se `tradingEnabled=false`, `aiTradingEnabled=false` ou estacao desabilitada.
+4. Se `signal="SELL"`, tenta vender a posicao atual da estacao.
+5. Para BUY/STRONG:
+   - carrega payload do `PayloadCache`
+   - faz fallback de bucket extremo se necessario
+   - ignora se ja esta segurando o mesmo `tokenId`
+   - roda guards
+   - escala tamanho:
+     - `MEDIUM` -> `50%`
+     - `STRONG` -> `100%`
+   - faz BUY ou ROTATE
+6. Persiste o resultado em `jonah_triggers`.
+
+Com `AI_TRADING_ENABLED=false`:
+
+- `/prediction` continua ativo
+- dashboard continua recebendo previsoes e learning
+- Jonah continua produzindo advisory e acumulando historico
+- `/trigger` responde bloqueado com reason `ai_trading_disabled`
+
+### Regra real de salto maximo do trigger
+
+O codigo atual nao implementa "max 1 bucket".
+
+Ele permite:
+
+- Fahrenheit: bucket-alvo ate `currentF + 6`
+- Celsius: bucket-alvo ate `current + 3`
+
+Isso aparece em dois pontos:
+
+- `wbot-jonah/src/proxy.py`
+- `wbot-wendy/src/modules/signal/prediction.route.ts`
+
+Observacao importante:
+
+- Os comentarios nesses arquivos falam em "2 buckets", mas `+6°F` equivale a 3 buckets Fahrenheit de 2 graus.
+- O documento antigo falava em "1 bucket".
+- A regra de negocio precisa de uma versao canonica; hoje texto, comentario e implementacao nao batem.
+
+### High-confidence early bypass
+
+`/trigger` permite bypass da janela inicial se:
+
+- `confidence >= 0.95`
+- e o horario local ainda estiver antes do inicio do `peakRange`
+
+Depois do fim da janela nao ha bypass.
+
+### Protecao de confianca entre triggers
+
+Existe uma protecao contra rotacionar para bucket diferente com qualidade pior no lado Jonah:
+
+- `wbot-jonah/src/proxy.py`
+
+No codigo atual auditado, Wendy tambem repete essa validacao em `/trigger` usando o ultimo `jonah_trigger` persistido.
+
+Impacto de contrato:
+
+- o contrato fica mais resistente mesmo para callers internos que nao passem pelo proxy do Jonah.
+
+### ROTATE
+
+Implementacao atual:
+
+1. BUY do bucket novo
+2. se BUY falhar, para tudo
+3. se BUY passar:
+   - consulta `bid` do bucket antigo
+   - se `bid < 0.03`, nao vende
+   - senao executa SELL do antigo
+
+### PayloadCache
+
+Comportamento real:
+
+- carrega na startup
+- recarrega a cada `30 min`
+- monta `Map` novo a cada reload
+- `fire()` mistura payload estatico com book fresco
+
+Observacao:
+
+- existe comentario em `server.ts` falando em refresh "every 60s", mas o codigo real esta em `30 min`.
+
+### Monitor
+
+`MonitorService` roda a cada `3 min` e faz:
+
+1. refresh de snapshots de mercado
+2. reconciliacao de posicoes reais vs estado interno
+3. deteccao de duplicatas reais por `station:tokenId`
+4. fila de `SELL` retry com max `3` tentativas
+
+Erros terminais descartados sem retry:
+
+- mensagens contendo `not enough balance`
+- mensagens contendo `allowance`
+
+---
+
+## 4. Jonah — Analyst / Learning
+
+Arquivos-chave auditados:
+
+- `wbot-jonah/src/main.py`
+- `wbot-jonah/src/predictor.py`
+- `wbot-jonah/src/ensemble.py`
+- `wbot-jonah/src/gpt.py`
+- `wbot-jonah/src/proxy.py`
+- `wbot-jonah/src/learning.py`
+- `wbot-jonah/src/db.py`
+
+### Entrada de sinais
+
+`POST /signal` em Jonah recebe copia de Ruth e faz:
+
+- METAR:
+  - atualiza buffer sempre
+  - salva no banco apenas quando `metar_raw` muda
+  - atualiza historico de chegada do METAR para heartbeat
+- PWS:
+  - atualiza buffer sempre
+  - salva toda leitura no banco
+
+Observacao:
+
+- existe docstring antiga em `main.py` sugerindo throttle de PWS por 5 min / 1 min, mas o codigo atual salva toda leitura.
+
+### Scheduler
+
+Jobs atuais no APScheduler:
+
+- `station_check`: intervalo de `5 min`
+- `save_snapshots`: intervalo de `2 min`
+- `hourly_cycle`: cron `minute=48`, timezone UTC
+- `learning`: cron `hour=LEARNING_HOUR_UTC`
+
+`hourly_cycle` em `:48` faz:
+
+- `run_dawn()` para quem ainda nao tem dawn no dia
+- `_pre_metar_prediction()` para sessoes ativas
+
+### Ensemble
+
+As 4 fontes reais sao:
+
+| Fonte | Peso atual |
+| --- | --- |
+| LightGBM | `0.20` |
+| Chronos | `0.25` |
+| Open-Meteo | `0.30` |
+| RAG | `0.25` |
+
+### Floor monotono
+
+`combine_sources()` remove apenas buckets totalmente abaixo do observado:
+
+```py
+bucket_width = 2 if unit == "F" else 1
+removed = {k: v for k, v in combined.items() if k + bucket_width <= observed_max}
 ```
-{date, station, observed_max_c, temp_probs, sources_accuracy,
- conditions: {clouds, wind, solar, humidity}, embedding}
-```
 
-- **Query:** busca dias similares baseado em condições atuais (embedding similarity)
-- **Learning:** nightly às 06:00 UTC — compara predictions vs actuals, armazena outcomes em Qdrant + `learning_outcomes`
-- **Backfill automático** na startup se Qdrant vazio
+Isso corrige o bug em que o bucket atual era removido cedo demais.
 
-### LightGBM — Retraining
+### GPT-5
 
-**`_retrain_lgbm()` em `learning.py` é um stub:**
+Implementacao atual em `gpt.py`:
 
-```python
+- OpenAI SDK: `AsyncOpenAI`
+- timeout: `60s`
+- chamada em `chat.completions.create`
+- `max_completion_tokens = 16384`
+- `response_format = {"type": "json_object"}`
+
+Fallback atual:
+
+- se houver erro de quota/rate-limit e `ANTHROPIC_API_KEY` estiver configurada
+- Jonah cai para `claude-sonnet-4-6`
+
+### Divergence cap
+
+Se GPT divergir demais do ensemble:
+
+- Fahrenheit: mais de `4°F`
+- Celsius: mais de `2°C`
+
+Jonah descarta o GPT e mantem o ensemble.
+
+### Market-converged guard
+
+Se o melhor bucket de mercado ja estiver `>= 0.90`:
+
+- Jonah nao chama GPT-5
+- Jonah nao envia trigger
+- ainda assim a previsao/advisory continua sendo salva
+
+### Thresholds de timing
+
+`ensemble.py` hoje usa:
+
+| Timing | Threshold |
+| --- | --- |
+| `STRONG` | `>= 0.55` |
+| `MEDIUM` | `>= 0.40` |
+| `SMALL` | `>= 0.30` |
+| `WAIT` | `< 0.30` |
+
+No `proxy.py`:
+
+- `MEDIUM` e `STRONG` viram trigger de BUY
+- `pre_metar` exige `range_prob >= 0.70`
+- `SELL` e disparado quando a confianca do mesmo bucket cai abaixo de `0.20`
+
+### Regras pre-filter no proxy
+
+Antes de bater em Wendy, Jonah pre-filtra:
+
+- mercado convergido
+- bucket distante demais do observado
+- fora da janela de trading, exceto bypass cedo com `>= 95%`
+- rotacao para bucket diferente com `range_prob` pior ou igual ao ultimo trigger
+
+Importante:
+
+- essa ultima regra nao e revalidada por Wendy
+
+### Learning e purge
+
+`run_learning()` hoje:
+
+1. resolve outcomes do dia por estacao
+2. salva `learning_outcomes`
+3. atualiza RAG/Qdrant
+4. faz purge de dados antigos
+5. chama `_retrain_lgbm()`
+
+Estado real do retrain:
+
+```py
 async def _retrain_lgbm():
     logger.info("LightGBM retrain: skipped (using pre-trained models)")
 ```
 
-- Modelos foram treinados manualmente em **2026-03-30** (18.594 amostras, 5 anos IEM, 10 estações)
-- O loop de learning nightly **NÃO retreina** o LightGBM — apenas armazena outcomes no Qdrant
-- Os pesos do ensemble (`WEIGHT_LGBM/CHRONOS/OPENMETEO/RAG`) são **env vars fixas**, nunca ajustadas automaticamente
-- Consequência: LightGBM não aprende com erros recentes. Somente o RAG (Qdrant) acumula memória operacional
+Ou seja:
 
-### Quando Jonah dispara /trigger para Wendy
+- o learning nao retreina LightGBM hoje
+- o que aprende continuamente e, na pratica, o lado RAG/memoria
 
-- Timing MEDIUM (>= 40%) ou STRONG (>= 55%) → BUY
-- Pre-METAR: confidence >= 70%
-- Downward ROTATE: bloqueado (daily max é monotônico)
-- **Condição de SELL:** confidence cai abaixo de 20% → POST /trigger com signal="SELL"
-- **Market converged guard (2026-04-08):** se melhor bucket >= $0.90 → skip GPT-5 + suprime trigger. Predição ensemble ainda é salva sem trigger. Log: `"market_converged: best bucket {bucket} at $X.XX"`
+Purge noturno implementado:
 
----
-
-## 4. Marty — Dashboard (React 19/Next.js)
-
-### Páginas
-
-| Página            | Conteúdo                                                    |
-| ----------------- | ----------------------------------------------------------- |
-| `/`               | Station board: 10 cards com temp live, posições, feed state |
-| `/station/[icao]` | Detail: buckets, timeline, posição atual                    |
-| `/positions`      | Todas as posições: open, losses, redeem                     |
-| `/logs`           | Logs filtráveis + TraceTimeline + filtro "Today"            |
-| `/settings`       | Config do bot (tradingEnabled, maxDailyLoss, stations)      |
-| `/status`         | Health: Ruth, Wendy, Jonah                                  |
-| `/learning`       | Accuracy stats por fonte, per-station                       |
-
-### WebSocket Events Recebidos
-
-| Event             | O que faz                                                            |
-| ----------------- | -------------------------------------------------------------------- |
-| `new_metar`       | Atualiza temp live, append history                                   |
-| `pws_update`      | Atualiza PWS, peak temps diário                                      |
-| `trade_executed`  | Log + highlight da estação                                           |
-| `trade_skipped`   | Log motivo                                                           |
-| `ai_prediction`   | Exibe no painel GPT-5 reasoning                                      |
-| `position_update` | Refresh posições                                                     |
-| `error`           | Toast — se contiver "token/invalid/unauthorized" → logout automático |
+- retencao: `90 dias`
+- tabelas:
+  - `metar_readings`
+  - `pws_readings`
+  - `session_updates`
+  - `trigger_history`
 
 ---
 
-## 5. Fluxo Completo — Trade Ciclo
+## 5. Marty — Dashboard
 
-```
-[Ruth]
-Poll NOAA (3s/60s adaptive)
-  ↓ novo METAR detectado
-  POST /signal {type: "METAR", tempC, ...}
+Rotas auditadas em `wbot-marty/app/`:
 
-[Wendy signal.service]
-Update runningMaxC = max(runningMaxC, tempC)
-bucket = getBucket(runningMaxC)  ← usa máximo, não temp atual
-  ↓ bucket > lastBucket (upward cross)
-Run guards:
-  - hora local dentro do peakRange?
-  - price entre $0.05 e $0.75?
-  - spread < $0.06?
-  - livro com liquidez?
-  - daily loss não excedido?
-  - station:bucket não locked?
-  ↓ guards passaram
-BUY new bucket (FOK, verify via getOrder)
-  ↓ filled
-Log + broadcast trade_executed → Marty
+- `/`
+- `/login`
+- `/positions`
+- `/logs`
+- `/settings`
+- `/status`
+- `/learning`
+- `/report`
+- detalhe de estacao em `app/station/[icao]`
 
-[Jonah] — paralelo, ciclo :48
-Ensemble: LightGBM + Chronos + Open-Meteo + RAG → combined probs
-Floor filter: remove buckets completamente abaixo do observed_max
-GPT-5: recebe probs + METAR + PWS + preços Polymarket → bucket + timing
-  ↓ timing MEDIUM/STRONG
-POST /trigger {station, bucket, confidence, timing}
+### WebSocket
 
-[Wendy /trigger]
-Fetch tokenId (PayloadCache)
-Edge bucket fallback se necessário
-Guards (price, spread, liquidity, window, max_1_bucket_jump)
-BUY ou ROTATE
-  ↓ ROTATE: BUY primeiro, SELL antigo só se bid > $0.03
+Eventos definidos no broadcaster de Wendy:
+
+- `new_metar`
+- `pws_update`
+- `trade_executed`
+- `trade_skipped`
+- `new_log`
+- `error`
+- `position_update`
+- `market_update`
+- `position_synced`
+- `ai_prediction`
+- `gpt_meta`
+- `gpt_prediction`
+
+Eventos realmente broadcastados no codigo auditado:
+
+- `new_metar`
+- `pws_update`
+- `trade_executed`
+- `trade_skipped`
+- `new_log`
+- `position_update`
+- `market_update`
+- `position_synced`
+- `ai_prediction`
+
+Envelope real publicado por Wendy:
+
+```json
+{
+  "type": "new_metar",
+  "data": {},
+  "timestamp": "2026-04-08T12:00:00.000Z"
+}
 ```
 
----
+### Auth de WS
 
-## 6. Regras de Trading — Resumo
+Wendy exige token JWT no query param `token` ou header `Authorization`.
 
-### Entrada (BUY)
+Se o token for invalido:
 
-- Apenas upward (running max nunca desce)
-- Preço YES: $0.05 ≤ price < $0.75
-- Spread ≤ $0.06
-- Livro com liquidez
-- Dentro da janela de trading (peakRange local)
-- Daily loss não excedido
-- Station:bucket não locked (previne concurrent trades)
-- CLOB: FOK, verificação obrigatória via `getOrder().size_matched`
-
-### ROTATE
-
-- BUY novo primeiro — se falhar, fica no bucket antigo
-- SELL antigo: apenas se bid > $0.03
-- Jonah trigger: max 1 bucket (2°F) acima do METAR atual
-- Downward rotate: sempre bloqueado
-
-### Saída (SELL)
-
-- Jonah dispara SELL quando confidence < 20%
-- SELL_STRANDED: quando novo bucket é price_out_of_range e bid do antigo > $0.03
-- Nenhuma stop-loss automática — hold até resolução
-
-### Kill Switches / Convergência de Mercado
-
-Três camadas independentes, propósitos distintos:
-
-| Threshold | Sistema                   | Propósito                                                        | Implementado  |
-| --------- | ------------------------- | ---------------------------------------------------------------- | ------------- |
-| `$0.75`   | Wendy (`guards.ts`)       | Não entrar — risk/reward ruim (max ganho = $0.25)                | ✅            |
-| `$0.90`   | Jonah (`predictor.py`)    | Parar GPT-5 — mercado praticamente resolvido, custo desperdiçado | ✅ 2026-04-08 |
-| `$1.00`   | Wendy (`market_resolved`) | Mercado resolvido de fato — para de tentar operar                | ✅            |
-
-- `tradingEnabled = false` → bloqueia TODO e qualquer ordem (kill switch manual)
+- Wendy fecha com `4003 Invalid token`
+- Marty trata erro de auth e faz logout/redirecionamento
 
 ---
 
-## 7. Bugs e Melhorias — Histórico
+## 6. Bancos e Persistencia
 
-| Data       | Item                                    | Efeito                                                                                                                                                |
-| ---------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2026-04-06 | SELL_STRANDED ausente                   | Posições perdedoras ficavam abertas quando ROTATE BUY bloqueado por price_out_of_range                                                                |
-| 2026-04-08 | Floor enforcement errado em ensemble.py | `int(observed_max)` removia bucket atual. Ex: running_max=71.6 → bucket 70-71 removido → Jonah prediz 72-73 → ROTATE errado saindo da posição correta |
-| 2026-04-08 | SELL com bid < $0.03                    | FOK SELL em bucket morto sempre falhava. Agora skip se bid < $0.03                                                                                    |
-| 2026-04-06 | Jonah ciclo fixo :48                    | Antes: timer dinâmico pós-METAR. Agora: cron simples às :48 de cada hora                                                                              |
-| 2026-04-06 | WS 401 loop                             | Wendy devolvia "Invalid token" no WS. Marty reconectava infinitamente. Agora redireciona para /login                                                  |
-| 2026-04-08 | P0 market_converged guard               | Jonah chamava GPT-5 com mercado já a $0.90+. Agora skipa GPT-5 e suprime trigger                                                                      |
-| 2026-04-08 | P1 dead bucket METAR guard              | METAR confirmativo entrava em bucket a $0.01 (descartado pelo mercado). Agora skip se yesPrice < $0.05                                                |
-| 2026-04-08 | P2 cascade ROTATE guard                 | ROTATEs consecutivos com SELL morto acumulavam N posições perdedoras. Agora bloqueado se openPositions > 1                                            |
-| 2026-04-08 | P3 ensemble weights rebalanceados       | OpenMeteo 0.20→0.30, LightGBM 0.30→0.20 (baseado em viés empírico Apr 1-7)                                                                            |
-| 2026-04-08 | P4 GPT-5 divergence cap                 | GPT-5 overridava ensemble correto em dias atípicos (KSEA: -14°F). Cap de 4°F implementado                                                             |
-| 2026-04-08 | Dead code metarCadence removido (Wendy) | Campo, getter `getMetarCadence()` e cálculo EMA nunca foram usados                                                                                    |
-| 2026-04-08 | DB purge nightly implementado (Jonah)   | `purge_old_data(retain_days=90)` deleta metar_readings, pws_readings, session_updates, trigger_history > 90 dias                                      |
+### Wendy DB
 
----
+Tabelas reais em `wbot-wendy/src/shared/db/schema.ts`:
 
-## 8. Problemas Estruturais — Status
+- `metar_observations`
+- `pws_observations`
+- `trades`
+- `logs`
+- `app_config`
+- `jonah_triggers`
+- `auth_sessions`
 
-### ✅ P0 — market_converged guard no Jonah (resolvido 2026-04-08)
+Observacoes:
 
-`predictor.py`: após `fetch_market_prices`, se melhor preço >= $0.90 → flag `market_converged=True` → skip GPT-5. `proxy.py`: suprime /trigger quando `market_converged`. A predição ensemble ainda é salva no DB sem trigger.
+- o documento anterior omitia `pws_observations`
+- o documento anterior omitia `jonah_triggers`
 
-### ✅ P1 — METAR confirmativo em buckets descartados (resolvido 2026-04-08)
+### Jonah DB
 
-`signal.service.ts`: guard antes do BUY confirmativo — se `yesPrice < $0.05` → skip com reason `dead_bucket_metar`. O mercado precifica antes do METAR confirmar; entrar em bucket a $0.01 é capital perdido.
+Tabelas reais em `wbot-jonah/src/db.py`:
 
-### ✅ P2 — ROTATEs em cascata deixam posições mortas (resolvido 2026-04-08)
+- `metar_readings`
+- `pws_readings`
+- `day_sessions`
+- `session_updates`
+- `learning_outcomes`
+- `buffer_snapshots`
+- `trigger_history`
 
-`signal.service.ts` e `prediction.route.ts`: cascade guard — antes de executar ROTATE, conta posições abertas da estação via `getPositions()`. Se count > 1 (orphan de SELL falho anterior) → skip com reason `cascade_guard`. Auto-recupera quando monitor (3min tick) limpa as posições órfãs.
+### Seguranca documental
 
-### ✅ P3 — Pesos ensemble desbalanceados (resolvido 2026-04-08)
+Este documento nao deve conter:
 
-OpenMeteo 0.20 → **0.30** (viés -1 a +2°F, empiricamente mais preciso). LightGBM 0.30 → **0.20** (sobre-estima +3 a +10°F sistematicamente).
+- URLs externas com senha
+- DSNs completos de banco
+- segredos de servico
 
-### ✅ P4 — GPT-5 override destrói ensemble correto em dias atípicos (resolvido 2026-04-08)
-
-**Diagnóstico empírico (Apr 1-7, `sources_accuracy = source_predicted - actual_F`):**
-
-| Fonte      | Viés típico     | Padrão                                                               |
-| ---------- | --------------- | -------------------------------------------------------------------- |
-| Open-Meteo | -1 a +2°F       | Mais precisa. Peso **0.30**                                          |
-| LightGBM   | +3 a +10°F      | Sobre-estima sistematicamente. Peso **0.20**                         |
-| Chronos    | Alta variância  | ±12°F possível. Sinal não confiável isolado                          |
-| RAG        | Maior variância | Erros de -17 a +17°F. Busca de dias similares falha em dias atípicos |
-
-**Caso KSEA 06/04** (real 72°F, Jonah final 58°F):
-
-- Fontes: Chronos=72°F (perfeito), Open-Meteo=73°F (quase perfeito), LightGBM=78.6°F (+6.6), RAG=78°F (+6)
-- Ensemble ponderado ≈ **75°F** (3°F acima do real — correto)
-- GPT-5 overridou para **58°F** → erro de 14°F _contra_ o ensemble que estava certo
-
-**Fix:** divergence cap em `predictor.py` — se GPT-5 diverge > 4°F (2 buckets) do ensemble, descarta resultado do GPT-5 e usa ensemble. GPT-5 ainda é chamado para casos dentro do cap.
+Esses dados pertencem ao `.env` e ao runtime, nao a documentacao do workspace.
 
 ---
 
-## 9. Banco de Dados
+## 7. Thresholds Verificados no Codigo
 
-### Wendy (PostgreSQL `wbot_prod`)
-
-- `metar_observations`: histórico completo de METARs com campos meteorológicos
-- `trades`: todos os trades com traceId, ação, bucket, tokenId, fillStatus
-- `logs`: logs unificados com station, level, category, metadata JSONB
-- `app_config`: configuração de trading (tradingEnabled, maxDailyLoss, etc.)
-- `auth_sessions`: sessões JWT
-
-**Acesso externo:** `postgresql://postgres:92b2602fbd1205f5@45.93.138.190:15432/wbot_prod`
-
-### Jonah (PostgreSQL `jonah_prod`)
-
-- `day_sessions`: sessão por estação/dia (status, current_bucket, current_confidence)
-- `session_updates`: cada update do ciclo (fase, bucket, confidence, sources JSONB)
-- `learning_outcomes`: resultados de aprendizado (predicted vs observed, sources_accuracy)
-- `trigger_history`: histórico de triggers enviados para Wendy
-
-**Acesso externo:** `postgresql://postgres@45.93.138.190:25432/jonah_prod`
-
-### Retenção / Purge
-
-**Jonah — purge nightly implementado (2026-04-08):** `purge_old_data(retain_days=90)` em `db.py`, chamado ao fim do loop nightly de learning. Deleta de 4 tabelas de alto crescimento:
-
-| Tabela            | Coluna de corte | Crescimento estimado |
-| ----------------- | --------------- | -------------------- |
-| `metar_readings`  | `captured_at`   | ~240 linhas/dia      |
-| `pws_readings`    | `captured_at`   | ~288 linhas/dia      |
-| `session_updates` | `created_at`    | ~50-100 linhas/dia   |
-| `trigger_history` | `created_at`    | variável             |
-
-`buffer_snapshots` usa `PRIMARY KEY (station)` com UPSERT — apenas 10 linhas (uma por estação), não cresce.
-
-**Wendy — sem purge.** `metar_observations` (~240/dia) e `logs` (~500-2000/dia) crescem sem limite. Candidato a implementar purge nightly via cron externo ou APScheduler.
-
-### Jonah (Qdrant)
-
-- 18.250 pontos (5 anos, 10 estações)
-- Cada ponto: date, station, observed_max, temp_probs, conditions, embedding
-- Learning nightly: compara predictions vs actuals
-- Backfill automático na startup se vazio
+| Parametro | Valor real |
+| --- | --- |
+| METAR fast poll | `3s` default |
+| METAR slow poll | `60s` |
+| PWS poll | `300s` default |
+| Circuit breaker open | `10` falhas |
+| Circuit breaker backoff | `30s` |
+| Retry buffer max | `20` itens |
+| Retry TTL | `30s` |
+| PayloadCache reload | `30 min` |
+| Monitor tick | `3 min` |
+| BUY min price | `$0.05` |
+| BUY max price | `< $0.75` |
+| Dead bucket sell skip | `bid < $0.03` |
+| Market converged em Jonah | `>= $0.90` |
+| Short-circuit de mercado em Wendy METAR/PWS | algum mercado `>= $0.95` |
+| `runGuards()` resolved | `yesPrice >= 1.00` |
+| Daily loss default | `$50` |
+| Daily loss aplicada em ROTATE | `nao` |
+| Order verify attempts | `5` |
+| Base delay de verify | `500ms` |
+| Trigger BUY MEDIUM | `50%` do `tradingMaxSize` |
+| Trigger BUY STRONG | `100%` do `tradingMaxSize` |
+| Trigger max jump | `+6°F` ou `+3°C` |
+| AI trading enabled default | `false` |
+| AI min edge default | `0.03` |
+| AI reliability floor default | `0.45` |
+| Pre-METAR trigger threshold | `>= 70%` |
+| SELL threshold em Jonah | `< 20%` |
+| GPT timeout | `60s` |
+| GPT max completion tokens | `16384` |
+| Divergence cap | `4°F` ou `2°C` |
 
 ---
 
-## 10. Thresholds — Referência Rápida
+## 8. Problemas de Negocio / Contrato Ainda Abertos
 
-| Parâmetro                 | Valor              |
-| ------------------------- | ------------------ |
-| BUY min price             | $0.05              |
-| BUY max price             | $0.75              |
-| Max spread                | $0.06              |
-| Dead bucket bid           | $0.03              |
-| METAR fast poll           | 3s                 |
-| METAR slow poll           | 60s                |
-| PWS poll                  | 300s               |
-| Monitor tick              | 3 min              |
-| PayloadCache reload       | 30 min             |
-| SELL retry max            | 3 tentativas       |
-| Daily loss default        | $20                |
-| FOK verify attempts       | 5 × 500ms          |
-| Jonah cycle               | :48 todo hora UTC  |
-| Timing STRONG             | >= 55%             |
-| Timing MEDIUM             | >= 40%             |
-| Pre-METAR threshold       | >= 70%             |
-| SELL threshold            | < 20%              |
-| Max bucket jump (trigger) | 1 bucket (2°F)     |
-| Floor filter unit         | 2°F (bucket_width) |
-| GPT-5 max tokens          | 16384              |
-| GPT-5 timeout             | 60s                |
-| Market converged (Jonah)  | >= $0.90           |
-| Dead bucket METAR (Wendy) | < $0.05            |
-| GPT-5 divergence cap      | 4°F (2 buckets)    |
-| Cascade guard threshold   | openPositions > 1  |
-| DB purge retention        | 90 dias            |
+### 8.1 Regra de max jump do `/trigger` esta sem fonte canonica
+
+Hoje existem tres narrativas diferentes:
+
+- documento antigo: `1 bucket`
+- comentarios no codigo: `2 buckets`
+- implementacao real: `+6°F / +3°C`
+
+Impacto:
+
+- risco de operar buckets mais distantes do que o esperado pela estrategia
+- dificulta backtesting e revisao operacional
+
+### 8.2 Cutoff de "mercado resolvido" nao e unico
+
+Valores atuais:
+
+- `0.90` -> Jonah corta GPT/trigger
+- `0.95` -> Wendy METAR/PWS para processamento de trade
+- `1.00` -> `runGuards()` retorna `resolved`
+
+Impacto:
+
+- a mesma situacao de mercado pode ser classificada de formas diferentes dependendo do caminho
+- dificulta logs, analytics e explicacao operacional
+
+### 8.3 Contrato METAR/SPECI precisa ser explicitado
+
+Status:
+
+- discriminador JSON sempre e `type: "METAR"`
+- `SPECI` vai em `metarType`
+
+Impacto:
+
+- qualquer consumidor novo que dependa do `type` para separar METAR vs SPECI vai errar
+
+### 8.4 Drift de comentarios e configuracoes nao usadas
+
+Itens encontrados:
+
+- comentario de `PayloadCache` em `server.ts` fala em `60s`, codigo real usa `30 min`
+- docstring de `/signal` em Jonah fala em throttle de PWS, codigo salva tudo
+- `GPT_PRE_METAR_WINDOW` existe em config, mas nao apareceu em uso no codigo auditado
+
+Impacto:
+
+- manutencao mais lenta
+- operador e desenvolvedor tomando decisao em cima de comentario errado
 
 ---
 
-_Gerado em: 2026-04-08 | Atualizado: 2026-04-08 (sessão de melhorias estruturais) | Versão: V5 | Branch: main_
+## 9. O que foi corrigido neste documento
+
+Em relacao a versao anterior, esta revisao:
+
+- removeu o estado ficticio de `metarCadence`
+- corrigiu os guards realmente ativos
+- corrigiu o tamanho real do `PayloadCache` reload
+- corrigiu o threshold real de `maxDailyLoss` default
+- corrigiu o fluxo PWS em Wendy para "analitico sem trade", nao "pass-through puro"
+- corrigiu o salto maximo real do `/trigger`
+- incluiu as tabelas `pws_observations` e `jonah_triggers`
+- removeu segredos e DSNs sensiveis do texto
+- separou claramente o que esta implementado do que ainda e risco aberto
+
+---
+
+Gerado a partir do codigo local em 2026-04-08.
