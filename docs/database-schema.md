@@ -1,373 +1,420 @@
 # Database Schema — Wozark V5
 
-> Single source of truth for all database structures, field mappings, and data contracts.
-> Last updated: 2026-04-08
+> Fonte de verdade para bancos, contratos entre servicos, retencao e estado atual do Qdrant.
+> Atualizado em 2026-04-08.
 
 ## Databases
 
-| Database     | Host (internal)              | Host (external)       | Port       | Credentials | Used by                                        |
-| ------------ | ---------------------------- | --------------------- | ---------- | ----------- | ---------------------------------------------- |
-| `wbot_prod`  | `srv-captain--wbot-db:5432`  | configured in runtime | 5432/15432 | `.env`      | Wendy (read/write), Jonah learning (read-only) |
-| `jonah_prod` | `srv-captain--jonah-db:5432` | configured in runtime | 5432/25432 | `.env`      | Jonah (read/write)                             |
-| Qdrant       | `srv-captain--qdrant:6333`   | —                     | 6333       | `.env`      | Jonah RAG (read/write)                         |
+| Database | Host interno | Porta externa | Uso |
+| --- | --- | --- | --- |
+| `wbot_prod` | `srv-captain--wdb:5432` | `15432` | Wendy read/write, Jonah learning read-only |
+| `jonah_prod` | `srv-captain--jonah-db:5432` | `25432` | Jonah read/write |
+| `Qdrant` | `srv-captain--qdrant:6333` | — | RAG do Jonah |
 
----
+## Retencao operacional
 
-## Data Flow: Ruth → Wendy + Jonah
+Em `2026-04-08`, o cleanup operacional removeu dados anteriores a `2026-04-01 00:00:00+00` nas tabelas de runtime.
 
+### Wendy
+
+- `logs`
+- `trades`
+- `metar_observations`
+- `pws_observations`
+- `jonah_triggers`
+
+### Jonah
+
+- `pws_readings`
+- `metar_readings`
+- `session_updates`
+- `day_sessions`
+- `trigger_history`
+
+`learning_outcomes` ja comecava em `2026-04-01`, entao nao precisou de purge adicional.
+
+No mesmo dia, o Qdrant foi corrigido:
+
+- `weather_days_v4` foi removida
+- `weather_days_v5` foi rebuildada em duas camadas:
+  - `18,604` dias historicos de `data/historical/all_stations.csv`
+  - `70` dias recentes de `learning_outcomes`
+- resultado final do rebuild: `18,674` pontos
+
+## Data Flow
+
+```text
+Ruth (camelCase JSON)
+  ├─ POST /signal -> Wendy
+  └─ POST /signal -> Jonah
+
+Jonah
+  ├─ POST /prediction -> Wendy
+  └─ POST /trigger -> Wendy
 ```
-Ruth (Rust, serde camelCase)
-  │
-  ├─ POST /signal → Wendy (x-internal-secret: RUTH_SECRET)
-  │   body.tempC → metar_observations.temp_c
-  │   body.metarRaw → metar_observations.metar_raw
-  │
-  └─ POST /signal → Jonah (x-internal-secret: RUTH_SECRET)
-      body.tempC → buffer.add_metar(temp_c=body["tempC"])
-      body.metarRaw → metar_readings.metar_raw
-```
 
-### Field Name Convention
+### Convencao de nomes
 
-| Layer              | Convention            | Example                                     |
-| ------------------ | --------------------- | ------------------------------------------- |
-| Ruth JSON output   | camelCase (serde)     | `tempC`, `dewpointC`, `metarRaw`, `windKt`  |
-| Wendy TypeScript   | camelCase (Zod)       | `tempC`, `dewpointC`, `metarRaw`            |
-| Wendy DB columns   | snake_case (Drizzle)  | `temp_c`, `dewpoint_c`, `metar_raw`         |
-| Jonah Python input | camelCase (from JSON) | `body.get("tempC")`, `body.get("metarRaw")` |
-| Jonah DB columns   | snake_case (psycopg2) | `temp_c`, `dewpoint_c`, `metar_raw`         |
+| Camada | Convencao | Exemplo |
+| --- | --- | --- |
+| Ruth JSON | camelCase | `tempC`, `metarRaw`, `capturedAt` |
+| Wendy TypeScript | camelCase | `tempC`, `metarRaw` |
+| Wendy DB | snake_case | `temp_c`, `metar_raw`, `captured_at` |
+| Jonah Python | camelCase entrada / snake_case DB | `body.get("tempC")`, `metar_raw` |
 
----
+## Wendy DB (`wbot_prod`)
 
-## 1. Wendy DB (`wbot_prod`)
+Schema real: `wbot-wendy/src/shared/db/schema.ts`
 
-Schema: `wbot-wendy/src/shared/db/schema.ts` (Drizzle ORM)
+### `metar_observations`
 
-### metar_observations
+Campos principais:
 
-| Column                 | Type        | Nullable | Default | Source                               |
-| ---------------------- | ----------- | -------- | ------- | ------------------------------------ |
-| id                     | SERIAL      | PK       | auto    | —                                    |
-| station                | VARCHAR(4)  | NOT NULL | —       | Ruth: `station`                      |
-| temp_c                 | REAL        | NOT NULL | —       | Ruth: `tempC`                        |
-| dewpoint_c             | REAL        | YES      | —       | Ruth: `dewpointC`                    |
-| humidity_pct           | SMALLINT    | YES      | —       | Ruth: `humidityPct`                  |
-| wind_deg               | SMALLINT    | YES      | —       | Ruth: `windDeg`                      |
-| wind_kt                | SMALLINT    | YES      | —       | Ruth: `windKt`                       |
-| gust_kt                | SMALLINT    | YES      | —       | Ruth: `gustKt`                       |
-| visibility_m           | INTEGER     | YES      | —       | Ruth: `visibilityM`                  |
-| cloud_layers           | JSONB       | YES      | —       | Ruth: `cloudLayers` [{cover, altFt}] |
-| pressure_hpa           | REAL        | YES      | —       | Ruth: `pressureHpa`                  |
-| max_temp_c_6h          | REAL        | YES      | —       | Ruth: `maxTempC6h`                   |
-| min_temp_c_6h          | REAL        | YES      | —       | Ruth: `minTempC6h`                   |
-| sea_level_pressure_hpa | REAL        | YES      | —       | Ruth: `seaLevelPressureHpa`          |
-| wx_string              | TEXT        | YES      | —       | Ruth: `wxString`                     |
-| auto_station           | BOOLEAN     | YES      | —       | Ruth: `autoStation`                  |
-| metar_type             | VARCHAR(5)  | YES      | —       | Ruth: `metarType`                    |
-| metar_raw              | TEXT        | NOT NULL | —       | Ruth: `metarRaw`                     |
-| valid_utc              | TIMESTAMPTZ | NOT NULL | —       | Ruth: parsed from `metarTime`        |
-| captured_at            | TIMESTAMPTZ | NOT NULL | —       | Ruth: `capturedAt`                   |
-| trace_id               | VARCHAR(64) | NOT NULL | —       | Ruth: `traceId`                      |
-| created_at             | TIMESTAMPTZ | —        | NOW()   | —                                    |
+- `station`
+- `temp_c`
+- `dewpoint_c`
+- `humidity_pct`
+- `wind_deg`
+- `wind_kt`
+- `gust_kt`
+- `visibility_m`
+- `cloud_layers`
+- `pressure_hpa`
+- `max_temp_c_6h`
+- `min_temp_c_6h`
+- `sea_level_pressure_hpa`
+- `wx_string`
+- `auto_station`
+- `metar_type`
+- `metar_raw`
+- `valid_utc`
+- `captured_at`
+- `trace_id`
+- `created_at`
 
-Indexes: `(station, valid_utc)`
+Indices relevantes:
 
-### pws_observations
+- `(station, valid_utc)`
+- unicidade `uq_metar_station_valid_raw (station, valid_utc, metar_raw)`
 
-| Column        | Type        | Nullable | Default | Source                                 |
-| ------------- | ----------- | -------- | ------- | -------------------------------------- |
-| id            | SERIAL      | PK       | auto    | —                                      |
-| station       | VARCHAR(4)  | NOT NULL | —       | Ruth: `station`                        |
-| median_temp_c | REAL        | NOT NULL | —       | Wendy calculates from readings         |
-| reading_count | SMALLINT    | NOT NULL | —       | `readings.length`                      |
-| readings      | JSONB       | YES      | —       | Ruth: `readings` [{pwsId, tempF, ...}] |
-| trace_id      | VARCHAR(64) | NOT NULL | —       | Ruth: `traceId`                        |
-| captured_at   | TIMESTAMPTZ | NOT NULL | —       | Ruth: `capturedAt`                     |
-| created_at    | TIMESTAMPTZ | —        | NOW()   | —                                      |
+Observacao:
 
-Indexes: `(station, captured_at)`
+- essa unicidade foi adicionada para impedir replay/duplicata do mesmo boletim.
 
-### trades
+### `pws_observations`
 
-| Column          | Type         | Nullable | Default | Source                                               |
-| --------------- | ------------ | -------- | ------- | ---------------------------------------------------- |
-| id              | SERIAL       | PK       | auto    | —                                                    |
-| trace_id        | VARCHAR(64)  | NOT NULL | —       | Wendy/Ruth trace                                     |
-| station         | VARCHAR(4)   | NOT NULL | —       | ICAO                                                 |
-| action          | VARCHAR(10)  | NOT NULL | —       | BUY, SELL                                            |
-| side            | VARCHAR(3)   | NOT NULL | —       | YES, NO                                              |
-| bucket          | VARCHAR(20)  | NOT NULL | —       | "84-85°F", "12°C"                                    |
-| token_id        | VARCHAR(128) | YES      | —       | Polymarket token ID                                  |
-| amount          | REAL         | YES      | —       | USDC (BUY only)                                      |
-| shares          | REAL         | YES      | —       | Share count                                          |
-| price           | REAL         | YES      | —       | Per-share price                                      |
-| order_id        | VARCHAR(128) | YES      | —       | CLOB order ID                                        |
-| fill_status     | VARCHAR(10)  | YES      | —       | FILLED, PARTIAL, FAILED                              |
-| signal_type     | VARCHAR(10)  | NOT NULL | —       | METAR, PWS, MANUAL, AI_UPGRADE, AI_TRIGGER, EXTERNAL |
-| market_snapshot | JSONB        | YES      | —       | {yesPrice, noPrice, ...}                             |
-| dry_run         | BOOLEAN      | —        | false   | DRY_MODE flag                                        |
-| created_at      | TIMESTAMPTZ  | —        | NOW()   | —                                                    |
+Campos principais:
 
-Indexes: `(station, created_at)`, `(trace_id)`
+- `station`
+- `median_temp_c`
+- `reading_count`
+- `readings`
+- `trace_id`
+- `captured_at`
+- `created_at`
 
-### logs
+Indice: `(station, captured_at)`
 
-| Column     | Type        | Nullable | Default                           |
-| ---------- | ----------- | -------- | --------------------------------- |
-| id         | SERIAL      | PK       | auto                              |
-| trace_id   | VARCHAR(64) | YES      | —                                 |
-| service    | VARCHAR(10) | NOT NULL | wendy, jonah, ruth                |
-| station    | VARCHAR(4)  | YES      | —                                 |
-| level      | VARCHAR(10) | NOT NULL | debug, info, warn, error, success |
-| category   | VARCHAR(20) | YES      | signal, trade, guard, trigger, ai |
-| message    | TEXT        | NOT NULL | —                                 |
-| metadata   | JSONB       | YES      | —                                 |
-| created_at | TIMESTAMPTZ | —        | NOW()                             |
+### `trades`
 
-Indexes: `(trace_id)`, `(service, created_at)`, `(station, created_at)`
+Campos principais:
 
-### app_config
+- `trace_id`
+- `station`
+- `action`
+- `side`
+- `bucket`
+- `token_id`
+- `amount`
+- `shares`
+- `price`
+- `order_id`
+- `fill_status`
+- `signal_type`
+- `market_snapshot`
+- `dry_run`
+- `created_at`
 
-| Column     | Type        | Nullable | Default |
-| ---------- | ----------- | -------- | ------- |
-| key        | VARCHAR(50) | PK       | —       |
-| value      | TEXT        | NOT NULL | —       |
-| updated_at | TIMESTAMPTZ | —        | NOW()   |
+`signal_type` hoje pode carregar:
 
-Known keys: `TRADING_ENABLED`, `TRADING_MAX_SIZE`, `TRADING_MAX_DAILY_LOSS`, `ENABLED_STATIONS`, `AUTH_PASSWORD`
+- `METAR`
+- `PWS`
+- `MANUAL`
+- `AI_TRIGGER`
+- `AI_UPGRADE`
+- `EXTERNAL`
 
-### auth_sessions
+### `logs`
 
-| Column     | Type         | Nullable | Default |
-| ---------- | ------------ | -------- | ------- |
-| id         | SERIAL       | PK       | auto    |
-| token_hash | VARCHAR(128) | NOT NULL | SHA-256 |
-| expires_at | TIMESTAMPTZ  | NOT NULL | —       |
-| revoked    | BOOLEAN      | —        | false   |
-| created_at | TIMESTAMPTZ  | —        | NOW()   |
+Campos principais:
 
----
+- `trace_id`
+- `service`
+- `station`
+- `level`
+- `category`
+- `message`
+- `metadata`
+- `created_at`
 
-## 2. Jonah DB (`jonah_prod`)
+### `app_config`
 
-Schema: `wbot-jonah/src/db.py` (raw SQL, psycopg2)
+Chaves operacionais importantes:
 
-### metar_readings
+- `TRADING_ENABLED`
+- `TRADING_MAX_SIZE`
+- `TRADING_MAX_DAILY_LOSS`
+- `ENABLED_STATIONS`
+- `AUTH_PASSWORD`
+- `AI_MIN_EDGE`
+- `AI_RELIABILITY_FLOOR`
 
-| Column        | Type        | Nullable | Default | Source              |
-| ------------- | ----------- | -------- | ------- | ------------------- |
-| id            | SERIAL      | PK       | auto    | —                   |
-| station       | VARCHAR(4)  | NOT NULL | —       | Ruth: `station`     |
-| temp_c        | REAL        | YES      | —       | Ruth: `tempC`       |
-| dewpoint_c    | REAL        | YES      | —       | Ruth: `dewpointC`   |
-| humidity_pct  | SMALLINT    | YES      | —       | Ruth: `humidityPct` |
-| wind_deg      | SMALLINT    | YES      | —       | Ruth: `windDeg`     |
-| wind_kt       | SMALLINT    | YES      | —       | Ruth: `windKt`      |
-| gust_kt       | SMALLINT    | YES      | —       | Ruth: `gustKt`      |
-| visibility_m  | INT         | YES      | —       | Ruth: `visibilityM` |
-| cloud_layers  | JSONB       | YES      | —       | Ruth: `cloudLayers` |
-| pressure_hpa  | REAL        | YES      | —       | Ruth: `pressureHpa` |
-| metar_raw     | TEXT        | YES      | —       | Ruth: `metarRaw`    |
-| max_temp_c_6h | REAL        | YES      | —       | Ruth: `maxTempC6h`  |
-| valid_utc     | TIMESTAMPTZ | YES      | —       | Ruth: `validUtc`    |
-| captured_at   | TIMESTAMPTZ | —        | NOW()   | —                   |
+Estado atual relevante:
 
-Indexes: `(station, captured_at)`
+- nao existe mais toggle operacional separado para AI trading; `/trigger` sempre chega ao runtime do Wendy e os bloqueios passam a ser so de guard/contrato
 
-**Dedup rule:** Only saves when `metarRaw` content changes (main.py line 236).
+### `jonah_triggers`
 
-### pws_readings
+Persistencia do resultado de `/trigger`:
 
-| Column          | Type        | Nullable | Default | Source                           |
-| --------------- | ----------- | -------- | ------- | -------------------------------- |
-| id              | SERIAL      | PK       | auto    | —                                |
-| station         | VARCHAR(4)  | NOT NULL | —       | Ruth: `station`                  |
-| median_c        | REAL        | YES      | —       | Calculated: median(tempF→°C)     |
-| reading_count   | SMALLINT    | YES      | —       | `len(readings)`                  |
-| solar_radiation | REAL        | YES      | —       | `max(readings[].solarRadiation)` |
-| uv              | REAL        | YES      | —       | `max(readings[].uv)`             |
-| raw_readings    | JSONB       | YES      | —       | Full readings array              |
-| captured_at     | TIMESTAMPTZ | —        | NOW()   | —                                |
+- station
+- bucket
+- signal
+- confidence
+- timing
+- range_prob
+- market_price
+- status
+- reason
+- trace_id
+- created_at
 
-Indexes: `(station, captured_at)`
+### `auth_sessions`
 
-**Persistencia atual:** salva toda leitura PWS recebida, sem throttle.
+- `token_hash`
+- `expires_at`
+- `revoked`
+- `created_at`
 
-### day_sessions
+## Jonah DB (`jonah_prod`)
 
-| Column             | Type        | Nullable | Default  |
-| ------------------ | ----------- | -------- | -------- |
-| id                 | SERIAL      | PK       | auto     |
-| station            | VARCHAR(4)  | NOT NULL | —        |
-| date               | DATE        | NOT NULL | —        |
-| dawn_bucket        | VARCHAR(20) | YES      | —        |
-| dawn_confidence    | REAL        | YES      | —        |
-| dawn_reasoning     | TEXT        | YES      | —        |
-| current_bucket     | VARCHAR(20) | YES      | —        |
-| current_confidence | REAL        | YES      | —        |
-| current_reasoning  | TEXT        | YES      | —        |
-| status             | VARCHAR(10) | —        | 'active' |
-| timing             | VARCHAR(10) | —        | 'WAIT'   |
-| range_prob         | REAL        | YES      | —        |
-| forecast_max       | REAL        | YES      | —        |
-| created_at         | TIMESTAMPTZ | —        | NOW()    |
-| locked_at          | TIMESTAMPTZ | YES      | —        |
-| resolved_at        | TIMESTAMPTZ | YES      | —        |
+Schema real: `wbot-jonah/src/db.py`
 
-**UNIQUE:** (station, date)
+### `metar_readings`
 
-### session_updates
+Campos principais:
 
-| Column          | Type        | Nullable | Default                     |
-| --------------- | ----------- | -------- | --------------------------- |
-| id              | SERIAL      | PK       | auto                        |
-| session_id      | INT         | NOT NULL | FK → day_sessions(id)       |
-| phase           | VARCHAR(10) | NOT NULL | dawn, update, rapid         |
-| bucket          | VARCHAR(20) | YES      | —                           |
-| confidence      | REAL        | YES      | —                           |
-| timing          | VARCHAR(10) | YES      | WAIT, SMALL, MEDIUM, STRONG |
-| reasoning       | TEXT        | YES      | —                           |
-| sources         | JSONB       | YES      | EnsembleSignal.to_dict()    |
-| market_snapshot | JSONB       | YES      | —                           |
-| metar_at_update | REAL        | YES      | Latest METAR temp °C        |
-| pws_at_update   | REAL        | YES      | Latest PWS median °C        |
-| created_at      | TIMESTAMPTZ | —        | NOW()                       |
+- `station`
+- `temp_c`
+- `dewpoint_c`
+- `humidity_pct`
+- `wind_deg`
+- `wind_kt`
+- `gust_kt`
+- `visibility_m`
+- `cloud_layers`
+- `pressure_hpa`
+- `metar_raw`
+- `max_temp_c_6h`
+- `valid_utc`
+- `captured_at`
 
-### learning_outcomes
+Observacao:
 
-| Column                 | Type        | Nullable | Default                                       |
-| ---------------------- | ----------- | -------- | --------------------------------------------- |
-| id                     | SERIAL      | PK       | auto                                          |
-| station                | VARCHAR(4)  | NOT NULL | —                                             |
-| date                   | DATE        | NOT NULL | —                                             |
-| actual_max_c           | REAL        | YES      | From Wendy DB: MAX(metar_observations.temp_c) |
-| actual_bucket          | VARCHAR(20) | YES      | Calculated from actual_max                    |
-| dawn_bucket            | VARCHAR(20) | YES      | From day_sessions                             |
-| final_bucket           | VARCHAR(20) | YES      | Last prediction                               |
-| was_correct            | BOOLEAN     | YES      | final == actual                               |
-| error_value            | REAL        | YES      | Degrees off                                   |
-| market_favorite_bucket | VARCHAR(20) | YES      | Highest-odds bucket                           |
-| market_was_correct     | BOOLEAN     | YES      | —                                             |
-| jonah_beat_market      | BOOLEAN     | YES      | —                                             |
-| sources_accuracy       | JSONB       | YES      | {lgbm: -1.5, chronos: 0.2}                    |
-| conditions             | JSONB       | YES      | Weather conditions vector                     |
-| evolution              | JSONB       | YES      | [{phase, bucket, confidence}]                 |
-| created_at             | TIMESTAMPTZ | —        | NOW()                                         |
+- Jonah salva METAR apenas quando `metar_raw` muda.
 
-**UNIQUE:** (station, date)
+### `pws_readings`
 
-**Cross-DB read:** Learning loop connects to Wendy's `wbot_prod` via `DATABASE_URL` to read `metar_observations.temp_c WHERE DATE(valid_utc) = yesterday`.
+- `station`
+- `median_c`
+- `reading_count`
+- `solar_radiation`
+- `uv`
+- `raw_readings`
+- `captured_at`
 
----
+### `day_sessions`
 
-## 3. Qdrant Vector DB
+- `station`
+- `date`
+- `dawn_bucket`
+- `dawn_confidence`
+- `current_bucket`
+- `current_confidence`
+- `status`
+- `timing`
+- `range_prob`
+- `forecast_max`
+- `created_at`
+- `locked_at`
+- `resolved_at`
 
-Collection: `weather_days_v4`
+Unico por `(station, date)`.
 
-| Property   | Value                  |
-| ---------- | ---------------------- |
-| Dimensions | 8                      |
-| Distance   | COSINE                 |
-| Point ID   | MD5(station:date)[:16] |
+### `session_updates`
 
-### Vector (8 dimensions, normalized)
+- `session_id`
+- `phase`
+- `bucket`
+- `confidence`
+- `timing`
+- `reasoning`
+- `sources`
+- `market_snapshot`
+- `metar_at_update`
+- `pws_at_update`
+- `created_at`
 
-| Index | Field        | Normalization            |
-| ----- | ------------ | ------------------------ |
-| 0     | temp_c       | / 40                     |
-| 1     | humidity_pct | / 100                    |
-| 2     | wind_kt      | min(val, 30) / 30        |
-| 3     | hour_local   | / 24                     |
-| 4     | month        | / 12                     |
-| 5     | dewpoint_c   | / 30                     |
-| 6     | gust_kt      | min(val, 40) / 40        |
-| 7     | station_hash | md5(station) % 100 / 100 |
+Observacao importante:
 
-### Payload
+- a partir de `2026-04-08`, `market_snapshot` voltou a ser salvo corretamente.
 
-| Field            | Type   | Source                          |
-| ---------------- | ------ | ------------------------------- |
-| station          | string | ICAO                            |
-| date             | string | YYYY-MM-DD                      |
-| actual_max       | float  | learning_outcomes.actual_max_c  |
-| actual_bucket    | string | Calculated                      |
-| predicted_bucket | string | day_sessions.current_bucket     |
-| was_correct      | bool   | learning_outcomes.was_correct   |
-| confidence       | float  | day_sessions.current_confidence |
-| error_value      | float  | Degrees off                     |
-| evolution        | list   | [{phase, bucket, confidence}]   |
-| sources_accuracy | dict   | Per-source error                |
+### `learning_outcomes`
 
-**Populated by:** `learning.py` nightly at 06:00 UTC.
+- `station`
+- `date`
+- `actual_max_c`
+- `actual_bucket`
+- `dawn_bucket`
+- `final_bucket`
+- `was_correct`
+- `error_value`
+- `market_favorite_bucket`
+- `market_was_correct`
+- `jonah_beat_market`
+- `sources_accuracy`
+- `conditions`
+- `evolution`
+- `created_at`
 
----
+Unico por `(station, date)`.
 
-## 4. API Contracts
+Estado atual conhecido:
 
-### Ruth → Wendy/Jonah METAR Signal
+- linhas atuais cobrem `2026-04-01` ate `2026-04-07`
+- historico antigo de `market_favorite_bucket` ficou `NULL` porque `session_updates.market_snapshot` nao estava sendo persistido
+- isso faz o `beat_market_rate` historico antigo ser pouco confiavel
+
+### `buffer_snapshots`
+
+- `station`
+- `snapshot`
+- `updated_at`
+
+Mantem apenas o ultimo snapshot por estacao.
+
+### `trigger_history`
+
+Historico bruto de decisao de trigger do Jonah.
+
+## Qdrant
+
+Implementacao real: `wbot-jonah/src/rag.py`
+
+- collection: `weather_days_v5`
+- dimensions: `12`
+- distance: `COSINE`
+- point id: hash deterministico de `station:date`
+
+Observacao operacional:
+
+- o banco relacional e o Qdrant agora estao alinhados no corte `2026-04-01+`
+- `weather_days_v4` foi removida do runtime
+- a `weather_days_v5` atual mistura memoria historica longa com a camada recente rica do runtime
+
+### Vetor
+
+| Index | Campo | Normalizacao |
+| --- | --- | --- |
+| 0 | `temp_c` | `/ 40` |
+| 1 | `humidity_pct` | `/ 100` |
+| 2 | `wind_kt` | `min(val, 30) / 30` |
+| 3 | `hour_local` | `/ 24` |
+| 4 | `month` | `/ 12` |
+| 5 | `dewpoint_c` | `/ 30` |
+| 6 | `gust_kt` | `min(val, 40) / 40` |
+| 7 | `station_hash` | hash modulo 100 |
+| 8 | `pressure_hpa` | normalizado em torno de `980-1040` |
+| 9 | `sin(wind_deg)` | componente circular |
+| 10 | `cloud_cover` | `/ 4` |
+| 11 | `solar_peak` | `min(val, 1000) / 1000` |
+
+### Payload tipico
+
+- `station`
+- `date`
+- `memory_source`
+- `actual_max`
+- `actual_bucket`
+- `predicted_bucket`
+- `was_correct`
+- `confidence`
+- `error_value`
+- `evolution`
+- `sources_accuracy`
+- `intraday_accuracy`
+- `intraday_drift`
+
+## Contratos principais
+
+### Ruth -> Wendy/Jonah METAR
 
 ```json
 {
   "type": "METAR",
-  "station": "KSEA",
-  "tempC": 15.6,
-  "tempF": 60,
-  "dewpointC": 8.3,
-  "humidityPct": 62,
-  "windDeg": 210,
-  "windKt": 12,
-  "gustKt": null,
-  "visibilityM": 16093,
-  "cloudLayers": [{ "cover": "FEW", "altFt": 2500 }],
-  "pressureHpa": 1013.2,
-  "maxTempC6h": null,
-  "minTempC6h": null,
-  "seaLevelPressureHpa": 1015.0,
-  "wxString": null,
-  "autoStation": true,
+  "station": "KAUS",
+  "tempC": 26.7,
+  "tempF": 80,
   "metarType": "METAR",
-  "metarRaw": "KSEA 281553Z 21012KT ...",
-  "metarTime": "2026-03-28T15:53:00Z",
-  "capturedAt": "2026-03-28T15:53:02Z",
-  "traceId": "ruth-metar-KSEA-20260328-155302123"
+  "metarRaw": "METAR KAUS 082253Z ...",
+  "metarTime": "2026-04-08T22:53:00Z",
+  "capturedAt": "2026-04-08T22:55:39.079Z",
+  "traceId": "ruth-metar-kaus-20260408-225539023"
 }
 ```
 
-### Jonah → Wendy Prediction
+### Jonah -> Wendy `/prediction`
 
 ```json
 {
-  "station": "KSEA",
+  "station": "KAUS",
   "prediction": {
-    "bucket": "58-59°F",
-    "confidence": 0.72,
-    "reasoning": "Range 58-59°F at 77%. Timing: MEDIUM. Sources: LightGBM, Chronos, Open-Meteo, RAG, GPT.",
-    "predicted_at": "2026-03-28T18:00:00Z",
-    "phase": "update"
+    "bucket": "80-81°F",
+    "confidence": 0.7,
+    "reasoning": "GPT-5 decision with ensemble context",
+    "phase": "pre_metar",
+    "predicted_at": "2026-04-08T22:50:44Z"
   }
 }
 ```
 
-### Jonah → Wendy Trigger (NEW)
+### Jonah -> Wendy `/trigger`
 
 ```json
 {
-  "station": "KSEA",
-  "bucket": "58-59°F",
+  "station": "KAUS",
+  "bucket": "80-81°F",
   "signal": "BUY",
-  "confidence": 0.85,
-  "reasoning": "ensemble consensus",
-  "traceId": "jonah-trigger-KSEA-1711648800"
+  "confidence": 0.7,
+  "timing": "STRONG",
+  "rangeProb": 0.36,
+  "traceId": "jonah-trigger-kaus-1775688644",
+  "learningProfile": {
+    "samples": 7,
+    "accuracy": 0.286,
+    "hourly": {
+      "17": { "samples": 3, "accuracy": 0.667 }
+    }
+  }
 }
 ```
 
----
+## Qualidade de dados
 
-## 5. Known Issues (Fixed)
-
-| Bug                            | Root Cause                                  | Fix                                                     | Date       |
-| ------------------------------ | ------------------------------------------- | ------------------------------------------------------- | ---------- |
-| Jonah METARs never saved to DB | `body.get("raw")` — field is `metarRaw`     | Changed to `body.get("metarRaw")`                       | 2026-03-28 |
-| Sessions fail to save          | `np.float64` not serializable by psycopg2   | `EnsembleSignal.__post_init__` converts to native float | 2026-03-28 |
-| Learning loop fails            | `DATE(observed_at)` — column is `valid_utc` | Changed to `DATE(valid_utc)`                            | 2026-03-28 |
-| Qdrant empty                   | Learning loop never ran (upstream bugs)     | Cascading fix from above 3                              | 2026-03-28 |
+- Wendy METAR truth esta mais forte depois de:
+  - dedupe por `station + valid_utc + metar_raw`
+  - limpeza de linhas quebradas
+  - parser de rollover de mes corrigido em Ruth
+- Jonah learning esta utilizavel para filtros simples de hora e estacao.
+- `beat_market_rate` so passa a ficar realmente confiavel para os dias gravados apos a correcao de `market_snapshot`.
+- o RAG agora preserva o historico longo e mantem os dias recentes ricos por cima.

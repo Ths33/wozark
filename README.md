@@ -1,48 +1,65 @@
 # Wozark Workspace
 
-Workspace principal do sistema de weather auto-trading da Wozark. Este repositorio nao contem a aplicacao em si; ele agrega os quatro subprojetos, documentacao operacional, logs de referencia e scripts de health check.
+Workspace principal do sistema de weather trading da Wozark. Este repositorio agrega os subprojetos, a documentacao operacional e os scripts de suporte.
 
 ## Estrutura
 
-| Projeto   | Diretorio     | Stack atual                                             | Papel                                |
-| --------- | ------------- | ------------------------------------------------------- | ------------------------------------ |
-| Workspace | `.`           | docs + scripts                                          | Orquestracao, referencias e operacao |
-| Ruth      | `wbot-ruth/`  | Rust, Axum, Tokio                                       | Sensor de METAR e PWS                |
-| Wendy     | `wbot-wendy/` | TypeScript, Fastify 5, Drizzle                          | Trading brain + API                  |
-| Marty     | `wbot-marty/` | Next.js 16, React 19, Tailwind v4, Zustand              | Dashboard operacional                |
-| Jonah     | `wbot-jonah/` | Python 3.12, FastAPI, LightGBM, Chronos, Qdrant, OpenAI | Predicao e sinais auxiliares         |
+| Projeto | Diretorio | Stack | Papel |
+| --- | --- | --- | --- |
+| Workspace | `.` | docs + scripts | Operacao e referencia |
+| Ruth | `wbot-ruth/` | Rust, Tokio | Captura METAR e PWS |
+| Wendy | `wbot-wendy/` | TypeScript, Fastify, Drizzle | Execucao, estado, API e WebSocket |
+| Marty | `wbot-marty/` | Next.js 16, React 19 | Dashboard operacional |
+| Jonah | `wbot-jonah/` | Python 3.12, FastAPI, LightGBM, Chronos, Qdrant, OpenAI | Predicao, learning e RAG |
 
-## Arquitetura
+## Arquitetura atual
 
 ```text
-Ruth  -- POST /signal ------> Wendy -- REST/WS ------> Marty
-  \                           |                         ^
-   \-- POST /signal -------> Jonah -- /prediction -----/
-                              |-- /trigger -----------> Wendy
-                              \-- /gpt-signal --------> Wendy
+Ruth  -- POST /signal ----------> Wendy -- REST/WS ----------> Marty
+  \                                ^
+   \-- POST /signal (copia) ----> Jonah -- /prediction -----> Wendy
+                                      \-- /trigger ---------> Wendy
 ```
 
-- Ruth busca a lista de estacoes em Wendy via `GET /stations/config`.
-- Wendy e a fonte central de configuracao, execucao de trades, logs e estado operacional.
-- Marty consome apenas a API/WebSocket da Wendy.
-- Jonah roda o ensemble meteorologico e envia sinais consultivos ou gatilhos para Wendy.
+- Ruth consulta as estacoes ativas em Wendy via `GET /stations/config`.
+- Wendy concentra configuracao, guards, trades, logs, analytics e broadcast.
+- Marty fala apenas com Wendy.
+- Jonah roda o ensemble, registra advisory em `/prediction` e dispara execucao em `/trigger`.
 
-Modo operacional atual auditado:
+## Modo operacional auditado em 2026-04-08
 
-- execucao automatica habilitada apenas para sinais METAR
-- Jonah continua gerando previsoes, learning/RAG e dados para dashboard
-- triggers AI ficam em modo advisory por padrao via `AI_TRADING_ENABLED=false`
+- Jonah voltou a ser o caminho ativo de entrada pre-METAR por default.
+- o trigger AI deixou de ser um toggle operacional; Wendy sempre considera `/trigger` elegivel e deixa a decisao final para os guards de runtime.
+- METAR nao faz mais entrada tardia nova:
+  - se confirmar o bucket comprado por Jonah, Wendy mantem a posicao;
+  - se divergir, Wendy rotaciona para o bucket oficial;
+  - se nao existir posicao pre-METAR, o METAR fica apenas como confirmacao/log.
+- PWS continua alimentando analytics, buffers e contexto, mas nao dispara ordem sozinho.
+- A base operacional foi limpa para manter dados a partir de `2026-04-01`.
 
-## O que existe neste repo
+## Qualidade atual de learning e RAG
 
-- `docs/database-schema.md`: contrato atual de bancos e payloads entre servicos.
-- `docs/2026-03-23-v5-architecture-design.md`: documento historico da arquitetura V5.
-- `docs/backlog-2026-03-28.md`: backlog tecnico consolidado.
-- `scripts/health-check.sh`: verifica o que e acessivel externamente.
-- `scripts/health-check-internal.sh`: verifica servicos internos quando executado no VPS.
-- `logs/`: snapshots CSV usados para analise e referencia operacional.
+- `learning_outcomes` em `jonah_prod` hoje cobrem `2026-04-01` ate `2026-04-07` e somam `70` rows.
+- Isso ja e suficiente para filtros simples por `station + local_hour`, mas ainda nao para sizing agressivo fino.
+- O bug que impedia salvar `market_snapshot` em `session_updates` foi corrigido em `2026-04-08`.
+- Consequencia:
+  - historico antigo de `beat_market_rate` nao e confiavel;
+  - os novos dias, a partir dessa correcao, passam a alimentar esse eixo corretamente.
+- O Qdrant real em Jonah usa a collection `weather_days_v5` com vetor de `12` dimensoes.
+- Em `2026-04-08`, a collection antiga foi removida e a `weather_days_v5` foi rebuildada com duas camadas:
+  - `18,604` dias historicos de `data/historical/all_stations.csv`
+  - `70` dias recentes ricos de `learning_outcomes`
+- Estado final da collection: `18,674` pontos.
+- A qualidade do RAG melhorou porque a memoria longa foi preservada e a memoria recente rica foi mantida por cima, mas o bloco de `beat-market` ainda depende de acumular mais dias novos com `market_snapshot` corrigido.
 
-## Setup do workspace
+## Documentos principais
+
+- `docs/system-overview-2026-04-08.md`: arquitetura, fluxos, thresholds, riscos de negocio e estado operacional real.
+- `docs/database-schema.md`: bancos, contratos, retencao e Qdrant.
+- `scripts/health-check.sh`: verificacoes externas.
+- `scripts/health-check-internal.sh`: verificacoes internas no VPS.
+
+## Setup rapido
 
 ```bash
 mkdir -p ~/personal/wozark && cd ~/personal/wozark
@@ -53,8 +70,6 @@ git clone git@github.com:Ths33/wendy.git wbot-wendy
 git clone git@github.com:Ths33/marty.git wbot-marty
 git clone git@github.com:Ths33/jonah.git wbot-jonah
 ```
-
-## Setup rapido por projeto
 
 ### Ruth
 
@@ -95,102 +110,65 @@ uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
 
 ## Variaveis de ambiente
 
-Cada projeto tem um `.env.example` documentado. Abaixo o resumo completo.
+Cada projeto tem o proprio `.env.example`. Os pontos operacionais mais importantes hoje sao:
 
-### Ruth (Sensor)
+### Ruth
 
-| Variavel        | Obrigatorio | Descricao                                               |
-| --------------- | ----------- | ------------------------------------------------------- |
-| `WENDY_URL`     | Sim         | URL interna de Wendy (`http://srv-captain--wendy:3000`) |
-| `RUTH_SECRET`   | Sim         | Segredo compartilhado (mesmo valor em Wendy/Jonah)      |
-| `WU_API_KEY`    | Sim         | API key do Weather Underground para PWS                 |
-| `NOAA_POLL_MS`  | Nao         | Intervalo rapido de polling METAR (default: 3000)       |
-| `PWS_POLL_MS`   | Nao         | Intervalo de polling PWS (default: 300000 = 5min)       |
-| `JONAH_ENABLED` | Nao         | Habilitar envio para Jonah (default: false)             |
-| `JONAH_URL`     | Nao         | URL interna de Jonah                                    |
-| `RUST_LOG`      | Nao         | Nivel de log (default: `wbot_ruth=info`)                |
+- `WENDY_URL`
+- `RUTH_SECRET`
+- `WU_API_KEY`
+- `NOAA_POLL_MS`
+- `PWS_POLL_MS`
+- `JONAH_ENABLED`
+- `JONAH_URL`
 
-### Wendy (Brain)
+### Wendy
 
-| Variavel           | Obrigatorio | Descricao                                |
-| ------------------ | ----------- | ---------------------------------------- |
-| `DATABASE_URL`     | Sim         | PostgreSQL connection string             |
-| `RUTH_SECRET`      | Sim         | Segredo para auth service-to-service     |
-| `JWT_SECRET`       | Sim         | Segredo para tokens JWT (Marty auth)     |
-| `AUTH_PASSWORD`    | Sim         | Senha inicial do operador                |
-| `POLY_API_KEY`     | Sim\*       | Polymarket CLOB API key                  |
-| `POLY_SECRET`      | Sim\*       | Polymarket CLOB secret                   |
-| `POLY_PASSPHRASE`  | Sim\*       | Polymarket CLOB passphrase               |
-| `POLY_PRIVATE_KEY` | Sim\*       | Private key da wallet (sem 0x)           |
-| `POLY_ADDRESS`     | Sim\*       | Endereco da wallet (com 0x)              |
-| `MARTY_ORIGIN`     | Sim         | URL do Marty para CORS                   |
-| `RUTH_URL`         | Nao         | URL interna de Ruth (health check)       |
-| `JONAH_URL`        | Nao         | URL interna de Jonah (predictions)       |
-| `JONAH_DB_URL`     | Nao         | URL do Jonah DB (health check)           |
-| `QDRANT_URL`       | Nao         | URL do Qdrant (health check)             |
-| `PORT`             | Nao         | Porta do servidor (default: 3000)        |
-| `LOG_LEVEL`        | Nao         | Nivel de log (default: info)             |
-| `DRY_MODE`         | Nao         | Simular trades sem CLOB (default: false) |
+- `DATABASE_URL`
+- `RUTH_SECRET`
+- `JWT_SECRET`
+- `AUTH_PASSWORD`
+- `POLY_*`
+- `MARTY_ORIGIN`
+- `JONAH_URL`
+- `QDRANT_URL`
 
-\*Obrigatorio para trading real, pode ficar vazio em DRY_MODE.
+Chaves operacionais em `app_config`:
 
-### Marty (Dashboard)
+- `TRADING_ENABLED`
+- `TRADING_MAX_SIZE`
+- `TRADING_MAX_DAILY_LOSS`
+- `ENABLED_STATIONS`
+- `AI_MIN_EDGE`
+- `AI_RELIABILITY_FLOOR`
 
-| Variavel                   | Obrigatorio | Descricao                                 |
-| -------------------------- | ----------- | ----------------------------------------- |
-| `NEXT_PUBLIC_WENDY_URL`    | Sim         | URL **publica** de Wendy (browser acessa) |
-| `NEXT_PUBLIC_WENDY_WS_URL` | Sim         | WebSocket URL de Wendy (`wss://...`)      |
+### Marty
 
-**Nota:** Marty nunca acessa Jonah diretamente. Todas as chamadas sao proxied via Wendy.
+- `NEXT_PUBLIC_WENDY_URL`
+- `NEXT_PUBLIC_WENDY_WS_URL`
 
-### Jonah (AI Analyst)
+### Jonah
 
-| Variavel             | Obrigatorio | Descricao                                    |
-| -------------------- | ----------- | -------------------------------------------- |
-| `WENDY_URL`          | Sim         | URL interna de Wendy                         |
-| `RUTH_SECRET`        | Sim         | Segredo para auth (mesmo valor)              |
-| `OPENAI_API_KEY`     | Sim         | API key da OpenAI (GPT-5)                    |
-| `GPT_MODEL`          | Sim         | Modelo a usar (default: gpt-5)               |
-| `JONAH_DATABASE_URL` | Sim         | PostgreSQL do Jonah (read-write)             |
-| `DATABASE_URL`       | Sim         | PostgreSQL de Wendy (read-only, learning)    |
-| `QDRANT_HOST`        | Sim         | Host do Qdrant                               |
-| `QDRANT_PORT`        | Sim         | Porta do Qdrant (default: 6333)              |
-| `WEIGHT_LGBM`        | Nao         | Peso do LightGBM no ensemble (default: 0.20) |
-| `WEIGHT_CHRONOS`     | Nao         | Peso do Chronos (default: 0.25)              |
-| `WEIGHT_OPENMETEO`   | Nao         | Peso do Open-Meteo (default: 0.30)           |
-| `WEIGHT_RAG`         | Nao         | Peso do RAG (default: 0.25)                  |
-| `LEARNING_HOUR_UTC`  | Nao         | Hora UTC do learning loop (default: 6)       |
-| `PORT`               | Nao         | Porta do servidor (default: 8000)            |
-
-Wendy tambem aceita chaves operacionais adicionais no `app_config`:
-
-- `AI_TRADING_ENABLED` (default `false`, bloqueia execucao de `/trigger` mas mantem previsao/advisory)
-- `AI_MIN_EDGE` (default `0.03`)
-- `AI_RELIABILITY_FLOOR` (default `0.45`)
-
-### Autenticacao entre servicos
-
-Todos os servicos internos usam o header `x-internal-secret` com o valor de `RUTH_SECRET`:
-
-```
-Ruth  --x-internal-secret--> Wendy
-Ruth  --x-internal-secret--> Jonah
-Jonah --x-internal-secret--> Wendy
-```
-
-Marty usa JWT via httpOnly cookie para autenticacao com Wendy.
+- `WENDY_URL`
+- `RUTH_SECRET`
+- `OPENAI_API_KEY`
+- `GPT_MODEL`
+- `DATABASE_URL`
+- `JONAH_DATABASE_URL`
+- `QDRANT_HOST`
+- `QDRANT_PORT`
 
 ## Producao
 
-| Servico  | URL publica                | Host interno                 |
-| -------- | -------------------------- | ---------------------------- |
-| Wendy    | `https://wendy.wozark.com` | `srv-captain--wendy:3000`    |
-| Marty    | `https://marty.wozark.com` | SPA exportada via nginx      |
-| Ruth     | interno                    | `srv-captain--ruth:8080`     |
-| Jonah    | interno                    | `srv-captain--jonah:8000`    |
-| Wendy DB | interno + porta externa    | `srv-captain--wbot-db:5432`  |
-| Jonah DB | interno + porta externa    | `srv-captain--jonah-db:5432` |
-| Qdrant   | interno                    | `srv-captain--qdrant:6333`   |
+| Servico | URL publica | Host interno |
+| --- | --- | --- |
+| Wendy | `https://wendy.wozark.com` | `srv-captain--wendy:3000` |
+| Marty | `https://marty.wozark.com` | export estatico via nginx |
+| Ruth | interno | `srv-captain--ruth:8080` |
+| Jonah | interno | `srv-captain--jonah:8000` |
+| Wendy DB | interno + porta externa | `srv-captain--wdb:5432/15432` |
+| Jonah DB | interno + porta externa | `srv-captain--jonah-db:5432/25432` |
+| Qdrant | interno | `srv-captain--qdrant:6333` |
 
 ## Health checks
 
@@ -199,16 +177,6 @@ bash scripts/health-check.sh
 ssh root@168.231.70.56 'bash -s' < scripts/health-check-internal.sh
 ```
 
-`health-check.sh` verifica Wendy, Marty e a porta externa do PostgreSQL. `health-check-internal.sh` inclui Ruth, Jonah e a conectividade interna do banco.
-
-## Estacoes atuais
-
-As estacoes ativas vivem no codigo de Wendy/Jonah e hoje sao 10 aeroportos dos EUA:
+## Estacoes ativas
 
 `KSEA`, `KLAX`, `KSFO`, `KDAL`, `KAUS`, `KHOU`, `KORD`, `KLGA`, `KMIA`, `KATL`
-
-## Observacoes
-
-- O `README` anterior ainda descrevia Marty como React/Vite e este repo como "orchestration" puro; o workspace atual inclui os subrepos locais.
-- O documento `docs/2026-03-23-v5-architecture-design.md` e historico e nao reflete todas as mudancas posteriores.
-- O schema de banco mais atual permanece em `docs/database-schema.md`.
