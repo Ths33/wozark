@@ -7,3 +7,10 @@ wbot-jonah/
 # Local settings (may contain secrets)
 .claude/settings.local.json
 .omc/
+
+# Generated / transient files
+entities.json
+mempalace.yaml
+codeflow-report.md
+.codex/
+logs/
