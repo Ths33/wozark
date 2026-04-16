@@ -1,11 +1,11 @@
 ---
-name: feedback_deploy_means_push
-description: Deploy to CapRover = git push to main. GitHub webhook triggers auto-deploy. Don't use caprover CLI.
+name: Deploy = git push
+description: When user says "deploy", it always means git push to CapRover via main branch
 type: feedback
+originSessionId: 6fbec674-b981-4501-b7e4-315eaee889f9
 ---
 
-When user says "deploy" or "faça deploy", it means `git push origin main`. CapRover has a GitHub webhook that auto-deploys on push to main.
+"Deploy" always means `git push origin main` — CapRover auto-deploys on push.
 
-**Why:** User got frustrated when Claude tried to use caprover CLI, SSH, and other methods instead of just pushing to GitHub. The deploy pipeline is already set up.
-
-**How to apply:** Deploy = commit + push to main. That's it. Don't try caprover CLI, SSH, or any other method.
+**Why:** CapRover watches main branch and rebuilds Docker image automatically.
+**How to apply:** After committing, push to origin main for each affected project. No manual CapRover UI steps needed.

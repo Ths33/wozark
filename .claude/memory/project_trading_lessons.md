@@ -1,22 +1,19 @@
 ---
-name: Trading Lessons from 2026-03-24
-description: First full day of V5 trading — key observations about PWS bias, buy-sell loops, and harvest conflicts
+name: Trading architecture lessons
+description: Key decisions and lessons learned about the trading system design
 type: project
+originSessionId: 6fbec674-b981-4501-b7e4-315eaee889f9
 ---
 
-Lessons from first production trading day (2026-03-24):
+- **FOK fill verification**: Never trust `success: true` — always verify via `getOrder().size_matched`
+- **Running max never descends**: `Math.max(prev, new)` only, reset on day change. Only advances from real METAR `tempC` — never from derived fields.
+- **METAR confirmative**: Wendy BUYs on every threshold crossing. When `jonahTokenId = null` (current state), Wendy is in pure METAR mode: BUY on first crossing, HOLD same bucket, BUY/ROTATE if bucket rises.
+- **Jonah is LEARNING-ONLY (2026-04-14+)**: No triggers for at least 3 months. `/trigger` endpoint exists in Wendy but Jonah does not call it. `jonahTokenId` is always null. Do not describe Jonah trigger behavior as active.
+- **Jonah trigger path (dormant)**: When/if triggers resume — Jonah fires at ≥70% confidence, Wendy does SKIP if same bucket already held, ROTATE if higher bucket. For now, irrelevant.
+- **ROTATE = BUY first**: Never sell before the new BUY succeeds
+- **max1hC removed (2026-04-14)**: `maxTempC6h` / `max_temp_1h_c` was a fake Synoptic rolling max (2 readings, not 1h). Removed entirely. Root cause of KHOU 84°F phantom max bug.
+- **Synoptic as primary METAR source (2026-04-14)**: Ruth fetches `/latest?within=120&vars=...,metar`. Parses `metar_set_1` for full METAR (cloud layers, SM visibility, ceiling, wx_string). Falls back to TGFTP if Synoptic down.
+- **Synoptic token**: `7c76618b66c74aee913bdbae4b448bdd` — requires Referer/Origin weather.gov headers, max 5 stations per batch
 
-**Wins:**
-- Paris +290%, London +528% — correct bucket entries via PWS anticipation
-- PWS anticipation works well when entry is near peak time (Paris ~12:30 local)
-
-**Losses/Issues:**
-- PWS has systematic 2-4°F upward bias vs METAR — predicts 72°F when real max is 68°F
-- Buy-sell loop: PWS buys → METAR doesn't confirm → auto-sell → PWS rebuys (fixed: disabled PWS_EXIT)
-- Harvest bought NO against our own YES positions (Atlanta 68-69°F)
-- Bot tried to SELL positions already closed manually on Polymarket ("not enough balance")
-- Multiple conflicting trades on same station within minutes (Chicago, NY, Atlanta)
-
-**Key insight:** PWS anticipation buys the "next bucket" but Polymarket pays on daily HIGH. At 11am Miami buying 80-81°F when market says 82-83°F is burning money — 80-81 is a waypoint, not the max. This is exactly what Jonah should solve.
-
-**How to apply:** Before adding trading logic, verify it won't create loops or act against existing positions. Portfolio sync must happen before trade decisions, not just every 3min. Harvest must exclude buckets where we have YES positions.
+**Why:** Learned from V4 phantom fills, duplicate trades, missed entries, and 2026-04-14 KHOU phantom max loss.
+**How to apply:** Always follow these patterns when modifying trading logic. Never assume Jonah triggers are active without confirming.

@@ -1,21 +1,18 @@
-# Memory Index — Wozark (Master)
+# Memory Index
 
-- [project_overview.md](project_overview.md) — Wozark V5 state: Jonah-gated METAR, pre-METAR predictions, intraday drift learning, 10 US stations
-- [project_jonah_gpt5_decisionmaker.md](project_jonah_gpt5_decisionmaker.md) — Jonah V5 (2026-04-03): GPT-5 decision-maker, pre-METAR, drift learning, heartbeat, manual isolation, learning endpoints
-- [project_jonah_v4.md](project_jonah_v4.md) — Jonah V5 mathematical ensemble: GPT-5 + 4 sources, range detection, timing signals, /trigger execution
-- [project_trading_performance.md](project_trading_performance.md) — Trading performance: $96→$340 in week 1 (manual entries)
-- [project_trading_lessons.md](project_trading_lessons.md) — First trading day lessons: PWS bias, buy-sell loops, harvest conflicts
-- [project_backlog.md](project_backlog.md) — Backlog: P2 time-exit, P3 PWS LightGBM + price-weighted. Codex sprint done (2026-04-03).
-- [user_tales.md](user_tales.md) — User profile and working preferences
-- [feedback_no_untested_changes.md](feedback_no_untested_changes.md) — Never change working CLOB/trading code without verifying v4 first
-- [feedback_deploy_means_push.md](feedback_deploy_means_push.md) — Deploy = git push to main. GitHub webhook triggers CapRover auto-deploy.
-- [feedback_monitor_duplicates.md](feedback_monitor_duplicates.md) — Monitor groups by tokenId not station; terminal CLOB errors stop retry
-- [reference_database.md](reference_database.md) — External DB access: postgres@45.93.138.190:15432/wbot_prod
-- [feedback_jonah_analysis_model.md](feedback_jonah_analysis_model.md) — How Jonah should analyze: METAR trend + PWS solar/UV + raw clouds + temporal context
-- [feedback_ksea_prediction.md](feedback_ksea_prediction.md) — KSEA lesson: strong solar + strong wind = temp cap. Don't over-weight solar alone.
-- [feedback_pragmatic_debugging.md](feedback_pragmatic_debugging.md) — Debug by following user's hypothesis first, trace data flow end-to-end before infrastructure deep-dives
-- [feedback_less_interview_more_delivery.md](feedback_less_interview_more_delivery.md) — Stop excessive brainstorming questions, deliver concrete artifacts fast
-- [reference_jonah_database.md](reference_jonah_database.md) — Jonah DB: postgres@45.93.138.190:25432/jonah_prod
-- [feedback_gpt5_weather_analysis.md](feedback_gpt5_weather_analysis.md) — GPT-5 > Claude for weather reasoning. KSEA 58-59°F correct, $200 earned 2026-03-27
-- [feedback_realtime_not_polling.md](feedback_realtime_not_polling.md) — Never use polling as substitute for WS push. Market/positions still need WS broadcast from Wendy.
-- [feedback_pws_peak_persistent.md](feedback_pws_peak_persistent.md) — PWS peaks must be server-side daily, not browser session. Feed to Jonah.
+- [User profile](user_tales.md) — Tales: experienced dev, BRT timezone, no over-engineering
+- [Project overview](project_overview.md) — Wozark weather trading system: Ruth/Wendy/Marty/Jonah
+- [Feedback: deploy = push](feedback_deploy_means_push.md) — "deploy" always means git push to CapRover
+- [Feedback: no untested changes](feedback_no_untested_changes.md) — Always build/compile before pushing
+- [Feedback: less interview more delivery](feedback_less_interview_more_delivery.md) — Plan then execute, don't ask too many questions
+- [Feedback: read code before describing behavior](feedback_read_code_before_describing.md) — Never trust CLAUDE.md for active behavior; confirm in code first
+- [Project: trading lessons](project_trading_lessons.md) — Key trading/architecture decisions made
+- [Project: Jonah learning-only](project_jonah_learning_only.md) — Jonah does NOT fire /trigger since 2026-04-14, for 3 months
+- [Project: Synoptic-first METAR](project_synoptic_first.md) — Synoptic primary, TGFTP fallback (TGFTP has 3min delay)
+- [Project: current state 2026-04-13](project_state_2026_04_13.md) — Synoptic primary, Jonah learning-only, Marty source badges
+- [Project: latency Helsinki](project_latency_helsinki.md) — CapRover em Helsinki, latência resolvida, não propor colocation
+- [Feedback: não maquiar](feedback_no_maquiar.md) — não subestimar user/projeto, propor escopo ambicioso real
+- [Reference: Jonah historical data](reference_jonah_historical_data.md) — dados de backtest estão em Jonah postgres+Qdrant
+- [Reference: TGFTP static](reference_tgftp_static.md) — TGFTP é .TXT estático cacheado, sem rate limit
+- [Reference: DBs externos](reference_database.md) — Wendy 15432 / Jonah 25432 em 45.93.138.190
+- [Project: no harvest NO](project_no_harvest_no.md) — nunca usar BUY NO / harvest; rotate recovery = SELL only
