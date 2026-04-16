@@ -5,11 +5,11 @@
 
 ## Databases
 
-| Database | Host interno | Porta externa | Uso |
-| --- | --- | --- | --- |
-| `wbot_prod` | `srv-captain--wdb:5432` | `15432` | Wendy read/write, Jonah learning read-only |
-| `jonah_prod` | `srv-captain--jonah-db:5432` | `25432` | Jonah read/write |
-| `Qdrant` | `srv-captain--qdrant:6333` | — | RAG do Jonah |
+| Database     | Host interno                 | Porta externa | Uso                                        |
+| ------------ | ---------------------------- | ------------- | ------------------------------------------ |
+| `wbot_prod`  | `srv-captain--wdb:5432`      | `15432`       | Wendy read/write, Jonah learning read-only |
+| `jonah_prod` | `srv-captain--jonah-db:5432` | `25432`       | Jonah read/write                           |
+| `Qdrant`     | `srv-captain--qdrant:6333`   | —             | RAG do Jonah                               |
 
 ## Retencao operacional
 
@@ -55,12 +55,12 @@ Jonah
 
 ### Convencao de nomes
 
-| Camada | Convencao | Exemplo |
-| --- | --- | --- |
-| Ruth JSON | camelCase | `tempC`, `metarRaw`, `capturedAt` |
-| Wendy TypeScript | camelCase | `tempC`, `metarRaw` |
-| Wendy DB | snake_case | `temp_c`, `metar_raw`, `captured_at` |
-| Jonah Python | camelCase entrada / snake_case DB | `body.get("tempC")`, `metar_raw` |
+| Camada           | Convencao                         | Exemplo                              |
+| ---------------- | --------------------------------- | ------------------------------------ |
+| Ruth JSON        | camelCase                         | `tempC`, `metarRaw`, `capturedAt`    |
+| Wendy TypeScript | camelCase                         | `tempC`, `metarRaw`                  |
+| Wendy DB         | snake_case                        | `temp_c`, `metar_raw`, `captured_at` |
+| Jonah Python     | camelCase entrada / snake_case DB | `body.get("tempC")`, `metar_raw`     |
 
 ## Wendy DB (`wbot_prod`)
 
@@ -324,20 +324,20 @@ Observacao operacional:
 
 ### Vetor
 
-| Index | Campo | Normalizacao |
-| --- | --- | --- |
-| 0 | `temp_c` | `/ 40` |
-| 1 | `humidity_pct` | `/ 100` |
-| 2 | `wind_kt` | `min(val, 30) / 30` |
-| 3 | `hour_local` | `/ 24` |
-| 4 | `month` | `/ 12` |
-| 5 | `dewpoint_c` | `/ 30` |
-| 6 | `gust_kt` | `min(val, 40) / 40` |
-| 7 | `station_hash` | hash modulo 100 |
-| 8 | `pressure_hpa` | normalizado em torno de `980-1040` |
-| 9 | `sin(wind_deg)` | componente circular |
-| 10 | `cloud_cover` | `/ 4` |
-| 11 | `solar_peak` | `min(val, 1000) / 1000` |
+| Index | Campo           | Normalizacao                       |
+| ----- | --------------- | ---------------------------------- |
+| 0     | `temp_c`        | `/ 40`                             |
+| 1     | `humidity_pct`  | `/ 100`                            |
+| 2     | `wind_kt`       | `min(val, 30) / 30`                |
+| 3     | `hour_local`    | `/ 24`                             |
+| 4     | `month`         | `/ 12`                             |
+| 5     | `dewpoint_c`    | `/ 30`                             |
+| 6     | `gust_kt`       | `min(val, 40) / 40`                |
+| 7     | `station_hash`  | hash modulo 100                    |
+| 8     | `pressure_hpa`  | normalizado em torno de `980-1040` |
+| 9     | `sin(wind_deg)` | componente circular                |
+| 10    | `cloud_cover`   | `/ 4`                              |
+| 11    | `solar_peak`    | `min(val, 1000) / 1000`            |
 
 ### Payload tipico
 

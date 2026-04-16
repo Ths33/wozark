@@ -28,12 +28,12 @@ Estado operacional real em `2026-04-08`:
 
 ## 2. Servicos
 
-| Servico | Stack | Papel real |
-| --- | --- | --- |
-| Ruth | Rust + Tokio + Reqwest | Captura METAR/PWS e publica para Wendy e Jonah |
-| Wendy | TypeScript + Fastify 5 + Drizzle | Estado operacional, guards, CLOB, API, analytics e WS |
-| Jonah | Python + FastAPI + APScheduler | Ensemble, GPT, learning, RAG e triggers |
-| Marty | Next.js + React 19 | Dashboard operacional |
+| Servico | Stack                            | Papel real                                            |
+| ------- | -------------------------------- | ----------------------------------------------------- |
+| Ruth    | Rust + Tokio + Reqwest           | Captura METAR/PWS e publica para Wendy e Jonah        |
+| Wendy   | TypeScript + Fastify 5 + Drizzle | Estado operacional, guards, CLOB, API, analytics e WS |
+| Jonah   | Python + FastAPI + APScheduler   | Ensemble, GPT, learning, RAG e triggers               |
+| Marty   | Next.js + React 19               | Dashboard operacional                                 |
 
 Estacoes ativas:
 
@@ -188,12 +188,12 @@ Jobs atuais:
 
 As 4 fontes reais continuam:
 
-| Fonte | Peso |
-| --- | --- |
-| LightGBM | `0.20` |
-| Chronos | `0.25` |
+| Fonte      | Peso   |
+| ---------- | ------ |
+| LightGBM   | `0.20` |
+| Chronos    | `0.25` |
 | Open-Meteo | `0.30` |
-| RAG | `0.25` |
+| RAG        | `0.25` |
 
 GPT-5 atua como decisor final acima do ensemble, com divergence cap.
 
@@ -257,29 +257,29 @@ Pontos relevantes:
 
 ## 7. Thresholds auditados
 
-| Parametro | Valor |
-| --- | --- |
-| METAR fast poll | `3s` |
-| METAR slow poll | `15s` |
-| PWS poll | `300s` |
-| Circuit breaker open | `10` falhas |
-| Circuit breaker backoff | `30s` |
-| Retry buffer max | `20` itens |
-| Retry TTL | `30s` |
-| PayloadCache reload | `30 min` |
-| Monitor tick | `3 min` |
-| BUY min price | `$0.05` |
-| BUY max price | `< $0.75` |
-| PWS price ceiling | `>= $0.70` |
-| Market converged em Jonah | `>= $0.90` |
-| `runGuards()` resolved | `yesPrice >= 1.00` |
-| Trigger max jump | `+6°F` ou `+3°C` |
-| `AI_MIN_EDGE` default | `0.03` |
-| `AI_RELIABILITY_FLOOR` default | `0.45` |
-| pre-METAR trigger | `range_prob >= 0.70` |
-| SELL threshold Jonah | `< 0.20` |
-| GPT timeout | `60s` |
-| Divergence cap | `4°F` ou `2°C` |
+| Parametro                      | Valor                |
+| ------------------------------ | -------------------- |
+| METAR fast poll                | `3s`                 |
+| METAR slow poll                | `15s`                |
+| PWS poll                       | `300s`               |
+| Circuit breaker open           | `10` falhas          |
+| Circuit breaker backoff        | `30s`                |
+| Retry buffer max               | `20` itens           |
+| Retry TTL                      | `30s`                |
+| PayloadCache reload            | `30 min`             |
+| Monitor tick                   | `3 min`              |
+| BUY min price                  | `$0.05`              |
+| BUY max price                  | `< $0.75`            |
+| PWS price ceiling              | `>= $0.70`           |
+| Market converged em Jonah      | `>= $0.90`           |
+| `runGuards()` resolved         | `yesPrice >= 1.00`   |
+| Trigger max jump               | `+6°F` ou `+3°C`     |
+| `AI_MIN_EDGE` default          | `0.03`               |
+| `AI_RELIABILITY_FLOOR` default | `0.45`               |
+| pre-METAR trigger              | `range_prob >= 0.70` |
+| SELL threshold Jonah           | `< 0.20`             |
+| GPT timeout                    | `60s`                |
+| Divergence cap                 | `4°F` ou `2°C`       |
 
 ## 8. Retencao e cleanup
 

@@ -1,182 +1,72 @@
-# Wozark Workspace
+# Wozark
 
-Workspace principal do sistema de weather trading da Wozark. Este repositorio agrega os subprojetos, a documentacao operacional e os scripts de suporte.
+Sistema de auto-trading sobre temperatura máxima diária em Polymarket. 4 serviços, deploy CapRover (https://captain.wozark.com).
 
-## Estrutura
+## Architecture
 
-| Projeto | Diretorio | Stack | Papel |
-| --- | --- | --- | --- |
-| Workspace | `.` | docs + scripts | Operacao e referencia |
-| Ruth | `wbot-ruth/` | Rust, Tokio | Captura METAR e PWS |
-| Wendy | `wbot-wendy/` | TypeScript, Fastify, Drizzle | Execucao, estado, API e WebSocket |
-| Marty | `wbot-marty/` | Next.js 16, React 19 | Dashboard operacional |
-| Jonah | `wbot-jonah/` | Python 3.12, FastAPI, LightGBM, Chronos, Qdrant, OpenAI | Predicao, learning e RAG |
+```
+Ruth (Rust)              Wendy (TS)              Marty (Next.js)         Jonah (Python)
+sensor                   trading brain           dashboard               learning analyst
+                                                                         (LEARNING-ONLY)
 
-## Arquitetura atual
+Synoptic /timeseries  ─► Ruth ─POST /signal─► Wendy ─POST /trigger─► (blocked)
+TGFTP (fallback)      ─►       │                    ─POST /prediction─► (advisory)
+WU PWS                ─►       └─POST /signal─► Jonah ─ensemble + GPT-5
+                                                       └─► RAG + nightly learning
+                                                            └─► outcomes (Qdrant)
 
-```text
-Ruth  -- POST /signal ----------> Wendy -- REST/WS ----------> Marty
-  \                                ^
-   \-- POST /signal (copia) ----> Jonah -- /prediction -----> Wendy
-                                      \-- /trigger ---------> Wendy
+                          Wendy ─WS─► Marty (real-time UI updates)
+                          Marty ─REST(JWT)─► Wendy (API)
 ```
 
-- Ruth consulta as estacoes ativas em Wendy via `GET /stations/config`.
-- Wendy concentra configuracao, guards, trades, logs, analytics e broadcast.
-- Marty fala apenas com Wendy.
-- Jonah roda o ensemble, registra advisory em `/prediction` e dispara execucao em `/trigger`.
+## Services
 
-## Modo operacional auditado em 2026-04-08
+| Service | Stack                                             | URL                      | Port |
+| ------- | ------------------------------------------------- | ------------------------ | ---- |
+| Ruth    | Rust + Axum                                       | internal                 | 8080 |
+| Wendy   | TypeScript + Fastify 5 + Drizzle                  | https://wendy.wozark.com | 3000 |
+| Marty   | Next.js 16 + React 19 + Recharts                  | https://marty.wozark.com | 80   |
+| Jonah   | Python 3.12 + FastAPI + GPT-5 + LightGBM + Qdrant | internal                 | 8000 |
 
-- Jonah voltou a ser o caminho ativo de entrada pre-METAR por default.
-- o trigger AI deixou de ser um toggle operacional; Wendy sempre considera `/trigger` elegivel e deixa a decisao final para os guards de runtime.
-- METAR nao faz mais entrada tardia nova:
-  - se confirmar o bucket comprado por Jonah, Wendy mantem a posicao;
-  - se divergir, Wendy rotaciona para o bucket oficial;
-  - se nao existir posicao pre-METAR, o METAR fica apenas como confirmacao/log.
-- PWS continua alimentando analytics, buffers e contexto, mas nao dispara ordem sozinho.
-- A base operacional foi limpa para manter dados a partir de `2026-04-01`.
+Cada projeto tem seu próprio `README.md` + `CLAUDE.md` com detalhes.
 
-## Qualidade atual de learning e RAG
+## What it does
 
-- `learning_outcomes` em `jonah_prod` hoje cobrem `2026-04-01` ate `2026-04-07` e somam `70` rows.
-- Isso ja e suficiente para filtros simples por `station + local_hour`, mas ainda nao para sizing agressivo fino.
-- O bug que impedia salvar `market_snapshot` em `session_updates` foi corrigido em `2026-04-08`.
-- Consequencia:
-  - historico antigo de `beat_market_rate` nao e confiavel;
-  - os novos dias, a partir dessa correcao, passam a alimentar esse eixo corretamente.
-- O Qdrant real em Jonah usa a collection `weather_days_v5` com vetor de `12` dimensoes.
-- Em `2026-04-08`, a collection antiga foi removida e a `weather_days_v5` foi rebuildada com duas camadas:
-  - `18,604` dias historicos de `data/historical/all_stations.csv`
-  - `70` dias recentes ricos de `learning_outcomes`
-- Estado final da collection: `18,674` pontos.
-- A qualidade do RAG melhorou porque a memoria longa foi preservada e a memoria recente rica foi mantida por cima, mas o bloco de `beat-market` ainda depende de acumular mais dias novos com `market_snapshot` corrigido.
+- Ruth polla Synoptic API a cada ~5min (slots `:00,:05,...,:50,:53,:55` + retry per-station)
+- Cada leitura fresca do sensor é mandada pra Wendy como signal
+- Wendy mantém `runningMaxC` por estação, detecta cruzamento de bucket de temperatura, executa BUY/ROTATE no Polymarket via CLOB
+- Edge: trade dispara no minuto que Synoptic expõe nova máxima do sensor — antes do METAR oficial horário (~30-50min de vantagem sobre bots que dependem de TGFTP)
+- Marty mostra tudo em real-time via WebSocket
+- Jonah aprende paralelamente (modo learning-only por 3 meses): ingere todo signal, roda ensemble (LightGBM + Chronos + Open-Meteo + RAG) + GPT-5, registra outcomes no Qdrant
 
-## Documentos principais
+## Stations (10 US)
 
-- `docs/system-overview-2026-04-08.md`: arquitetura, fluxos, thresholds, riscos de negocio e estado operacional real.
-- `docs/database-schema.md`: bancos, contratos, retencao e Qdrant.
-- `scripts/health-check.sh`: verificacoes externas.
-- `scripts/health-check-internal.sh`: verificacoes internas no VPS.
+KSEA, KLAX, KSFO, KDAL, KAUS, KHOU, KORD, KLGA, KMIA, KATL.
 
-## Setup rapido
+## Setup local
+
+Cada serviço se desenvolve isoladamente:
 
 ```bash
-mkdir -p ~/personal/wozark && cd ~/personal/wozark
-
-git clone git@github.com:Ths33/wozark.git .
-git clone git@github.com:Ths33/ruth.git wbot-ruth
-git clone git@github.com:Ths33/wendy.git wbot-wendy
-git clone git@github.com:Ths33/marty.git wbot-marty
-git clone git@github.com:Ths33/jonah.git wbot-jonah
+cd wbot-ruth && cargo run
+cd wbot-wendy && npm install && npm run dev
+cd wbot-marty && npm install && npm run dev
+cd wbot-jonah && pip install -r requirements.txt && python -m src.main
 ```
 
-### Ruth
+Variáveis de ambiente em cada projeto (ver respectivo README).
 
-```bash
-cd wbot-ruth
-cp .env.example .env
-cargo run
-```
+## Deploy
 
-### Wendy
+CapRover git push para `main` em cada repo. Auto-deploy. Cada serviço é independente.
 
-```bash
-cd wbot-wendy
-cp .env.example .env
-npm install
-npm run dev
-```
+## Documentação operacional
 
-### Marty
+Detalhes técnicos por projeto:
 
-```bash
-cd wbot-marty
-cp .env.example .env
-npm install
-npm run dev
-```
+- [Ruth](./wbot-ruth/README.md) — sensor Synoptic + TGFTP
+- [Wendy](./wbot-wendy/README.md) — trading brain + CLOB
+- [Marty](./wbot-marty/README.md) — dashboard real-time
+- [Jonah](./wbot-jonah/README.md) — learning analyst (currently learning-only)
 
-### Jonah
-
-```bash
-cd wbot-jonah
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-## Variaveis de ambiente
-
-Cada projeto tem o proprio `.env.example`. Os pontos operacionais mais importantes hoje sao:
-
-### Ruth
-
-- `WENDY_URL`
-- `RUTH_SECRET`
-- `WU_API_KEY`
-- `NOAA_POLL_MS`
-- `PWS_POLL_MS`
-- `JONAH_ENABLED`
-- `JONAH_URL`
-
-### Wendy
-
-- `DATABASE_URL`
-- `RUTH_SECRET`
-- `JWT_SECRET`
-- `AUTH_PASSWORD`
-- `POLY_*`
-- `MARTY_ORIGIN`
-- `JONAH_URL`
-- `QDRANT_URL`
-
-Chaves operacionais em `app_config`:
-
-- `TRADING_ENABLED`
-- `TRADING_MAX_SIZE`
-- `TRADING_MAX_DAILY_LOSS`
-- `ENABLED_STATIONS`
-- `AI_MIN_EDGE`
-- `AI_RELIABILITY_FLOOR`
-
-### Marty
-
-- `NEXT_PUBLIC_WENDY_URL`
-- `NEXT_PUBLIC_WENDY_WS_URL`
-
-### Jonah
-
-- `WENDY_URL`
-- `RUTH_SECRET`
-- `OPENAI_API_KEY`
-- `GPT_MODEL`
-- `DATABASE_URL`
-- `JONAH_DATABASE_URL`
-- `QDRANT_HOST`
-- `QDRANT_PORT`
-
-## Producao
-
-| Servico | URL publica | Host interno |
-| --- | --- | --- |
-| Wendy | `https://wendy.wozark.com` | `srv-captain--wendy:3000` |
-| Marty | `https://marty.wozark.com` | export estatico via nginx |
-| Ruth | interno | `srv-captain--ruth:8080` |
-| Jonah | interno | `srv-captain--jonah:8000` |
-| Wendy DB | interno + porta externa | `srv-captain--wdb:5432/15432` |
-| Jonah DB | interno + porta externa | `srv-captain--jonah-db:5432/25432` |
-| Qdrant | interno | `srv-captain--qdrant:6333` |
-
-## Health checks
-
-```bash
-bash scripts/health-check.sh
-ssh root@168.231.70.56 'bash -s' < scripts/health-check-internal.sh
-```
-
-## Estacoes ativas
-
-`KSEA`, `KLAX`, `KSFO`, `KDAL`, `KAUS`, `KHOU`, `KORD`, `KLGA`, `KMIA`, `KATL`
+Conventions de orquestração entre serviços e regras de trading: ver [CLAUDE.md](./CLAUDE.md) raiz.
