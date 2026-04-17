@@ -115,6 +115,7 @@ Synoptic's `/timeseries?recent=10` returns ALL obs in the last 10min. Wins:
 - FOK with GTC fallback. Verify via `getOrder().size_matched` always.
 - No stop-loss. Hold to resolution.
 - Jonah `/trigger` endpoint was DELETED from Wendy (2026-04-16). Pure METAR trading. Don't recreate without explicit product decision.
+- **Jonah defer veto** (2026-04-16): entries AND rotations consult Jonah. If Jonah points to a higher bucket with ≥60% confidence and that bucket is priced ≥35c (≥12c above current), Wendy holds 5-10min instead of buying/rotating into the cheap bucket. Still "learning-only" for triggering trades — Jonah never initiates. Heuristic, not backtested — watch for false holds in prod.
 
 ## Time / Locale
 
@@ -143,6 +144,17 @@ cd ~/personal/wozark/wbot-jonah    # Learning analyst (Python)
 ```
 
 Cross-project orchestration (integration, API contracts): work from this master directory.
+
+## Lint & format (per stack)
+
+| Project | Formatter | Linter | Config |
+|---------|-----------|--------|--------|
+| Ruth    | `cargo fmt` | `cargo clippy` | `rustfmt.toml`, `clippy.toml` |
+| Wendy   | `npm run format` (prettier) | `npm run lint` (eslint flat) | `.prettierrc.json`, `eslint.config.js` |
+| Marty   | `npm run format` (prettier) | `npm run lint` (next eslint) | `.prettierrc.json`, `eslint.config.mjs` |
+| Jonah   | `ruff format` | `ruff check` | `pyproject.toml` |
+
+Wendy uses no-semicolons + single-quote. Marty uses standard Next defaults (semi + double-quote). Don't unify — each stack follows its own convention.
 
 ## Critical rules (cross-cutting)
 
