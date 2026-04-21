@@ -147,12 +147,12 @@ Cross-project orchestration (integration, API contracts): work from this master 
 
 ## Lint & format (per stack)
 
-| Project | Formatter | Linter | Config |
-|---------|-----------|--------|--------|
-| Ruth    | `cargo fmt` | `cargo clippy` | `rustfmt.toml`, `clippy.toml` |
-| Wendy   | `npm run format` (prettier) | `npm run lint` (eslint flat) | `.prettierrc.json`, `eslint.config.js` |
+| Project | Formatter                   | Linter                       | Config                                  |
+| ------- | --------------------------- | ---------------------------- | --------------------------------------- |
+| Ruth    | `cargo fmt`                 | `cargo clippy`               | `rustfmt.toml`, `clippy.toml`           |
+| Wendy   | `npm run format` (prettier) | `npm run lint` (eslint flat) | `.prettierrc.json`, `eslint.config.js`  |
 | Marty   | `npm run format` (prettier) | `npm run lint` (next eslint) | `.prettierrc.json`, `eslint.config.mjs` |
-| Jonah   | `ruff format` | `ruff check` | `pyproject.toml` |
+| Jonah   | `ruff format`               | `ruff check`                 | `pyproject.toml`                        |
 
 Wendy uses no-semicolons + single-quote. Marty uses standard Next defaults (semi + double-quote). Don't unify — each stack follows its own convention.
 
