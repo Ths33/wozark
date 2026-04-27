@@ -117,6 +117,15 @@ Synoptic's `/timeseries?recent=10` returns ALL obs in the last 10min. Wins:
 - Jonah `/trigger` endpoint was DELETED from Wendy (2026-04-16). Pure METAR trading. Don't recreate without explicit product decision.
 - **Jonah defer veto** (2026-04-16): entries AND rotations consult Jonah. If Jonah points to a higher bucket with ≥60% confidence and that bucket is priced ≥35c (≥12c above current), Wendy holds 5-10min instead of buying/rotating into the cheap bucket. Still "learning-only" for triggering trades — Jonah never initiates. Heuristic, not backtested — watch for false holds in prod.
 
+## Spread shadow trader (D+2)
+
+Wendy module that runs in parallel to METAR trading. Buys 3 buckets (idx -1, 0, +1 around Jonah D+2 forecast) for each station-day and tracks which exits A/B/C resolve best. Pure shadow — no real CLOB orders.
+
+- **Strategy v2** (`spread-v2-2026-04-27`): hold-to-resolution. A trigger (2.5x take-profit) DISABLED. Backtest 60d Apr+Feb-Mar 2026: A leaks ~$25/win because winning legs resolve at ~$40/leg vs A's fixed +$15.
+- **Filters**: `ask < $0.05` (tail bucket lottery tickets) and `ask > $0.60` skip leg. `market_polarized` (tail label > 60c) skips entire cohort.
+- **Disabled stations** (spread only): KORD, KAUS — 13-19% win rate vs 30%+ on hot stations. METAR trading still uses full 10-station list.
+- **Tables**: `spread_shadow_trades`, `polymarket_market_trades` (raw trade archive, daily snapshot job — outlasts CLOB ~30-day prices-history retention).
+
 ## Time / Locale
 
 - Server logs: UTC (Docker timestamp, can't change)
