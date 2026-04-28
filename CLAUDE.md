@@ -121,7 +121,8 @@ Synoptic's `/timeseries?recent=10` returns ALL obs in the last 10min. Wins:
 
 Wendy module that runs in parallel to METAR trading. Buys 3 buckets (idx -1, 0, +1 around Jonah D+2 forecast) for each station-day and tracks which exits A/B/C resolve best. Pure shadow — no real CLOB orders.
 
-- **Strategy v2** (`spread-v2-2026-04-27`): hold-to-resolution. A trigger (2.5x take-profit) DISABLED. Backtest 60d Apr+Feb-Mar 2026: A leaks ~$25/win because winning legs resolve at ~$40/leg vs A's fixed +$15.
+- **Strategy v2** (`spread-v2-2026-04-27`): hold-to-resolution. A trigger (2.5x take-profit) DISABLED on all legs.
+- **Strategy v2.5** (`spread-v2.5-2026-04-28`): A re-enabled for `bucket_index === -1` only (lottery legs); idx 0/+1 stay hold-to-C. Backtest 60d paper ($10 stake): HYBRID-1 +$1115 vs v2 +$530, ~2× improvement. Heuristic — real A fill rate unmeasured.
 - **Filters**: `ask < $0.05` (tail bucket lottery tickets) and `ask > $0.60` skip leg. `market_polarized` (tail label > 60c) skips entire cohort.
 - **Disabled stations** (spread only): KORD, KAUS — 13-19% win rate vs 30%+ on hot stations. METAR trading still uses full 10-station list.
 - **Tables**: `spread_shadow_trades`, `polymarket_market_trades` (raw trade archive, daily snapshot job — outlasts CLOB ~30-day prices-history retention).
