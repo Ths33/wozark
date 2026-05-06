@@ -14,3 +14,4 @@
 - [Reference: TGFTP static](reference_tgftp_static.md) — TGFTP é .TXT estático cacheado, sem rate limit
 - [Reference: DBs externos](reference_database.md) — Wendy 15432 / Jonah 25432 em 45.93.138.190
 - [Project: no harvest NO](project_no_harvest_no.md) — nunca usar BUY NO / harvest; rotate recovery = SELL only
+- [Project: spread v2](project_spread_v2.md) — strategy v2 (drop A, min ask $0.05, exclude KORD/KAUS) deployed 2026-04-27, validated 60d backtest

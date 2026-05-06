@@ -115,17 +115,17 @@ Synoptic's `/timeseries?recent=10` returns ALL obs in the last 10min. Wins:
 - FOK with GTC fallback. Verify via `getOrder().size_matched` always.
 - No stop-loss. Hold to resolution.
 - Jonah `/trigger` endpoint was DELETED from Wendy (2026-04-16). Pure METAR trading. Don't recreate without explicit product decision.
-- **Jonah defer veto** (2026-04-16): entries AND rotations consult Jonah. If Jonah points to a higher bucket with ≥60% confidence and that bucket is priced ≥35c (≥12c above current), Wendy holds 5-10min instead of buying/rotating into the cheap bucket. Still "learning-only" for triggering trades — Jonah never initiates. Heuristic, not backtested — watch for false holds in prod.
+- **Jonah defer veto REMOVED** (2026-05-05): 28d learning_outcomes mostrou Jonah hits 22-41%/station vs market favorite 15-78% — sub-baseline em 7/10. Veto bloqueava trades em forecast pior que mercado. Funções `shouldDeferOfficialEntry`+`applyDeferEntryCheck` deletadas. Reativar só com gate per-station provando Jonah > market.
 
 ## Spread shadow trader (D+2)
 
-Wendy module that runs in parallel to METAR trading. Buys 3 buckets (idx -1, 0, +1 around Jonah D+2 forecast) for each station-day and tracks which exits A/B/C resolve best. Pure shadow — no real CLOB orders.
+Wendy module em paralelo ao METAR trading. Cohort de 2 buckets [-1, 0] vs Jonah D+2 forecast. Pure shadow — sem CLOB real.
 
-- **Strategy v2** (`spread-v2-2026-04-27`): hold-to-resolution. A trigger (2.5x take-profit) DISABLED on all legs.
-- **Strategy v2.5** (`spread-v2.5-2026-04-28`): A re-enabled for `bucket_index === -1` only (lottery legs); idx 0/+1 stay hold-to-C. Backtest 60d paper ($10 stake): HYBRID-1 +$1115 vs v2 +$530, ~2× improvement. Heuristic — real A fill rate unmeasured.
-- **Filters**: `ask < $0.05` (tail bucket lottery tickets) and `ask > $0.60` skip leg. `market_polarized` (tail label > 60c) skips entire cohort.
-- **Disabled stations** (spread only): KORD, KAUS — 13-19% win rate vs 30%+ on hot stations. METAR trading still uses full 10-station list.
-- **Tables**: `spread_shadow_trades`, `polymarket_market_trades` (raw trade archive, daily snapshot job — outlasts CLOB ~30-day prices-history retention).
+- **Strategy v3** (`spread-v3-2026-05-05`, ativa): 4-station whitelist (KATL/KLAX/KMIA/KSEA), 2 buckets [-1, 0], $2 stake. Exit A em idx=-1 (lottery 2.5x take-profit), Exit B (invalidação) sempre, Exit C em idx=0 (hold-to-resolution). Old v1/v2/v2.5 superseded — rows históricos em DB mas sem code paths especiais.
+- **Filters**: `ask < $0.05` e `ask > $0.60` skip leg. `market_polarized` (tail > 60c) skip cohort.
+- **Disabled stations** (spread only): KORD, KAUS, KDAL, KLGA, KHOU, KSFO. METAR trading **continua usando 10 stations**.
+- **Backtest honesto**: 5d v2.5 amostra +$12.22 ROI 18.9%. 8d v1 amostra negativo. Sample minúsculo. Projeção realista: break-even a +$80/ano em paper. Observar 14d v3 antes de calibrar offsets ou escalar.
+- **Tables**: `spread_shadow_trades`, `polymarket_market_trades` (raw trade archive, daily snapshot — outlasts CLOB ~30-day prices-history retention).
 
 ## Time / Locale
 
