@@ -721,7 +721,281 @@ Antes de reativar:
 
 Sem essas etapas, Jonah deve continuar advisory.
 
-## 10. Bancos e Schema
+## 10. Polymarket, Wallet e Endpoints Externos
+
+### Papel da Polymarket no sistema
+
+Wendy usa a Polymarket em duas camadas diferentes:
+
+1. Gamma API para descobrir eventos, mercados, labels de buckets e token IDs.
+2. CLOB API/SDK para book, fee, tick size, assinatura e envio de ordens.
+
+Jonah tambem consulta precos de mercado para contexto de previsao, mas nao
+executa ordens no modo atual. Marty nunca fala direto com Polymarket; Marty fala
+com Wendy.
+
+### Endpoints externos usados
+
+| API | Endpoint | Chamador | Uso |
+| --- | --- | --- | --- |
+| Gamma | `https://gamma-api.polymarket.com/events?slug=<slug>` | Wendy | Descobrir evento diario de temperatura, mercados e token IDs |
+| CLOB | `https://clob.polymarket.com/book?token_id=<token>` | Wendy | Book snapshot, best bid/ask, liquidity, spread, tick size |
+| CLOB | `https://clob.polymarket.com/price?token_id=<token>&side=<side>` | Wendy | Preco de mercado auxiliar |
+| CLOB | `https://clob.polymarket.com/midpoint?token_id=<token>` | Wendy | Midpoint auxiliar |
+| CLOB | `https://clob.polymarket.com/spread?token_id=<token>` | Wendy | Spread auxiliar |
+| CLOB | `https://clob.polymarket.com/fee-rate?token_id=<token>` | Wendy | Fee rate em basis points |
+| CLOB | `https://clob.polymarket.com/tick-size?token_id=<token>` | Wendy | Incremento minimo de preco |
+| CLOB | `https://clob.polymarket.com/last-trades-prices?token_ids=<ids>` | Wendy | Ultimos trades em batch |
+| CLOB SDK | `createAndPostMarketOrder` | Wendy | BUY/SELL FOK |
+| CLOB SDK | `createOrder` + `postOrder` | Wendy | GTC fallback/limit order |
+| CLOB SDK | `getOrder` | Wendy | Verificacao de fill |
+| CLOB SDK | `cancelOrders` | Wendy | Cancelar ordem aceita mas nao preenchida |
+
+### Slug dos mercados
+
+Wendy constroi o slug diario da Gamma assim:
+
+```text
+highest-temperature-in-<citySlug>-on-<month-name>-<day>-<year>
+```
+
+Exemplo conceitual:
+
+```text
+highest-temperature-in-austin-on-april-8-2026
+```
+
+O `citySlug` vem da configuracao de estacoes. A data usada e a data local da
+estacao, nao BRT e nao necessariamente UTC.
+
+### Descoberta de token IDs
+
+Fluxo de descoberta:
+
+```text
+station + localDate
+  -> montar slug Gamma
+  -> GET /events?slug=...
+  -> ler event.markets[]
+  -> para cada market:
+       label = groupItemTitle
+       threshold = groupItemThreshold
+       conditionId = conditionId
+       yesTokenId = clobTokenIds[0]
+       noTokenId = clobTokenIds[1]
+       yesPrice/noPrice = outcomePrices
+  -> ordenar buckets por threshold
+```
+
+Wendy usa o `yesTokenId` para trading real. O caminho BUY NO/harvest foi
+removido e nao deve ser recriado sem decisao explicita.
+
+### Payload cache
+
+Wendy mantem cache de payload estatico por `station -> bucketLabel`:
+
+```text
+tokenId
+tickSize
+negRisk
+feeRateBps
+```
+
+Esse cache recarrega aproximadamente a cada 30 minutos para capturar mercados
+novos e evitar token IDs obsoletos de dias anteriores.
+
+No momento do trigger, Wendy chama `payloadCache.fire(station, bucket)`:
+
+```text
+static payload
+  + fresh book snapshot
+  -> bestAsk
+  -> bestBid
+  -> spread
+  -> bidVolume
+  -> askVolume
+  -> hasLiquidity
+```
+
+Essa e a chamada de mercado que importa no hot path. O restante deve estar
+pre-carregado quando possivel.
+
+### Wallet e autenticacao CLOB
+
+Wendy cria um singleton `ClobClient` com:
+
+```text
+HOST = https://clob.polymarket.com
+CHAIN_ID = 137
+wallet = ethers.Wallet(POLY_PRIVATE_KEY)
+credentials = POLY_API_KEY + POLY_SECRET + POLY_PASSPHRASE
+signatureType = 2
+funder/address = POLY_ADDRESS, quando definido
+```
+
+Variaveis necessarias:
+
+```env
+POLY_PRIVATE_KEY=<private-key-da-wallet>
+POLY_API_KEY=<clob-api-key>
+POLY_SECRET=<clob-api-secret>
+POLY_PASSPHRASE=<clob-api-passphrase>
+POLY_ADDRESS=<proxy/funder-address>
+```
+
+Notas operacionais:
+
+- A wallet e Polygon (`CHAIN_ID=137`).
+- A private key assina ordens via SDK.
+- As credenciais `POLY_API_*` autenticam no CLOB.
+- `POLY_ADDRESS` identifica a proxy/funder wallet quando aplicavel.
+- O codigo usa `signatureType = 2`, comentado como proxy wallet no SDK.
+- Nao commitar valores reais dessas variaveis em docs ou codigo.
+
+### Pre-requisitos da wallet
+
+Antes de ligar trading real:
+
+1. A wallet deve existir e controlar a private key configurada.
+2. A proxy/funder wallet esperada pela Polymarket deve estar correta.
+3. A conta deve ter USDC/collateral disponivel para ordens.
+4. Permissoes/allowances exigidas pela Polymarket devem estar prontas.
+5. Credenciais CLOB devem corresponder a wallet/proxy configurada.
+6. `DRY_MODE` deve estar `false` apenas quando a operacao real for desejada.
+7. `TRADING_ENABLED` e `METAR_TRADING_ENABLED` devem estar coerentes no
+   `app_config`.
+
+Se qualquer parte desse fluxo estiver errada, Wendy pode conseguir ler mercado
+mas falhar ao assinar/postar ordem.
+
+### BUY real
+
+Fluxo de BUY:
+
+```text
+signal cruza bucket
+  -> payloadCache.fire()
+  -> guards
+  -> escolher amount e price
+  -> placeBuyOrder(client, tokenId, price, dollarAmount, opts)
+  -> createAndPostMarketOrder(..., Side.BUY, OrderType.FOK)
+  -> retry ate 3 vezes, subindo +$0.01 por tentativa
+  -> cap de preco de retry em 0.74
+  -> verificar resposta rapida
+  -> se ambiguo, poll getOrder()
+  -> exigir size_matched > 0
+  -> salvar trade fire-and-forget
+  -> broadcast trade_executed e position_update
+```
+
+Regras importantes:
+
+- Valor minimo de BUY e `$1`.
+- FOK nao preenchido deve ser tratado como falha.
+- Ordem aceita sem fill e cancelada.
+- `success: true` nao e suficiente.
+- `size_matched > 0` e a evidencia operacional de fill.
+
+### SELL real
+
+Fluxo de SELL:
+
+```text
+sell/rotate/monitor
+  -> placeSellOrder(client, tokenId, shares, opts)
+  -> floor shares para 2 casas
+  -> createAndPostMarketOrder(..., Side.SELL, OrderType.FOK)
+  -> price = 0.01
+  -> verificar resposta rapida
+  -> se ambiguo, poll getOrder()
+  -> exigir size_matched > 0
+  -> salvar trade fire-and-forget
+  -> broadcast trade_executed e position_update
+```
+
+Regras importantes:
+
+- Menos de `0.01` shares nao vende.
+- SELL tambem precisa verificacao por `size_matched`.
+- SELL falho nao deve ser mascarado como sucesso.
+
+### GTC fallback / limit order
+
+Wendy tem helper para ordem limitada:
+
+```text
+createOrder(...)
+postOrder(..., OrderType.GTC)
+```
+
+Uso esperado:
+
+- fallback quando FOK nao resolve.
+- cenarios onde manter ordem viva e aceitavel.
+
+Restricao:
+
+- GTC aumenta risco operacional porque ordem pode ficar aberta. Deve ser usado
+  apenas nos caminhos ja previstos pelo trading engine.
+
+### DRY_MODE
+
+`DRY_MODE=true` desliga envio real ao CLOB:
+
+- BUY retorna order id `dry-*` e shares simuladas.
+- SELL retorna order id `dry-*` e shares vendidas simuladas.
+- Saldo default documentado no codigo: `100`.
+- Trades salvos carregam `dryRun=true`.
+
+DRY mode e util para smoke test de fluxo sem wallet real, mas nao valida
+assinatura, allowance, saldo, fill ou comportamento real do book.
+
+### Market data vs execution data
+
+Separar estes conceitos:
+
+| Dado | Origem | Uso |
+| --- | --- | --- |
+| `yesPrice/noPrice` | Gamma event | Contexto e fallback visual |
+| `bestAsk/bestBid` | CLOB book | Entrada, guards e spread |
+| `tickSize` | CLOB book ou `/tick-size` | Parametro de ordem |
+| `negRisk` | CLOB book | Parametro de ordem |
+| `feeRateBps` | CLOB `/fee-rate` | Parametro de ordem |
+| `size_matched` | CLOB `getOrder` | Verdade de fill |
+
+Para trading, book e fill vencem precos agregados.
+
+### Erros comuns
+
+- Token ID de ontem: resolver via reload do payload cache.
+- Slug do dia errado: checar timezone local da estacao.
+- Book sem asks: nao ha entrada compravel.
+- Book sem bids: pode bloquear liquidez/saida.
+- API key errada: leitura publica pode funcionar, ordem falha.
+- Private key errada: assinatura falha.
+- `POLY_ADDRESS` errado: assinatura/autorizacao pode falhar mesmo com private
+  key valida.
+- Allowance/saldo insuficiente: ordem falha no CLOB.
+- Ordem `success: true` com `size_matched=0`: tratar como phantom e cancelar.
+
+### Endpoints internos relacionados a Polymarket
+
+| Endpoint Wendy | Uso |
+| --- | --- |
+| `GET /positions` | Lista posicoes CLOB e PnL |
+| `GET /balance` | Saldo e gasto diario |
+| `POST /buy` | Ordem manual BUY |
+| `POST /sell` | Ordem manual SELL |
+| `GET /analytics/entries` | Analise de entradas |
+| `GET /analytics/operations` | Guards e decisoes |
+| `GET /ops/pnl` | PnL operacional |
+| `GET /spread/*` | Simulador spread com dados Polymarket |
+| `POST /spread/snapshot-now` | Arquivar trades Polymarket |
+| `POST /spread/live-prices` | Consultar precos live por token |
+
+Esses endpoints sao consumidos por Marty com JWT. Eles nao devem expor secrets.
+
+## 11. Bancos e Schema
 
 ### Wendy Postgres
 
@@ -829,7 +1103,7 @@ Tabelas:
 | Jonah Python | snake_case interno | `valid_utc`, `market_snapshot` |
 | Jonah payload input | aceita camelCase | `body.get("tempC")` |
 
-## 11. Desenvolvimento Local
+## 12. Desenvolvimento Local
 
 Cada servico desenvolve isoladamente:
 
@@ -859,7 +1133,7 @@ Build/test antes de push:
 | Marty | `npm run build` | build e smoke visual | `npm run lint`, `npm run format` |
 | Jonah | import/uvicorn smoke | `pytest tests/` | `ruff check`, `ruff format` |
 
-## 12. Deploy
+## 13. Deploy
 
 Deploy e feito por Git push para o branch monitorado pelo CapRover. Cada servico
 e independente e possui seu proprio deploy.
@@ -884,7 +1158,7 @@ Servicos em producao:
 
 Ruth e Jonah sao internos.
 
-## 13. Padroes de Codigo
+## 14. Padroes de Codigo
 
 ### Geral
 
@@ -937,7 +1211,7 @@ Ruth e Jonah sao internos.
 - DB writes defensivos em ingestao.
 - Erro transiente de INSERT nao deve derrubar `/signal`.
 
-## 14. Aprendizados Historicos
+## 15. Aprendizados Historicos
 
 ### Synoptic-first
 
@@ -994,7 +1268,7 @@ Docs antigos ja ficaram errados sobre `/trigger`, PWS e modo Jonah. Por isso a
 documentacao foi consolidada em documento unico. Se algo mudar, atualizar este
 documento no mesmo ciclo da mudanca.
 
-## 15. Checklist para Mudancas
+## 16. Checklist para Mudancas
 
 Antes de mudar:
 
@@ -1040,7 +1314,7 @@ Antes de push:
 - Commit com mensagem convencional.
 - Push para branch principal do repo correto.
 
-## 16. Glossario
+## 17. Glossario
 
 | Termo | Definicao |
 | --- | --- |
@@ -1056,7 +1330,7 @@ Antes de push:
 | `validUtc` | Timestamp real da observacao. |
 | `capturedAt` | Momento em que Ruth capturou/publicou o dado. |
 
-## 17. Politica de Documentacao
+## 18. Politica de Documentacao
 
 Esta pasta deve conter a documentacao canonica atual. Documentos antigos,
 duplicados ou conflitantes devem ser removidos em vez de mantidos como memoria
