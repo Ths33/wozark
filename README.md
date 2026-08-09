@@ -62,6 +62,10 @@ CapRover git push para `main` em cada repo. Auto-deploy. Cada serviço é indepe
 
 ## Documentação operacional
 
+Catálogo consolidado do projeto:
+
+- [Project Catalog](./docs/project-catalog.md) — sumário ponta a ponta, mapa de pastas, aprendizados e docs obsoletos
+
 Detalhes técnicos por projeto:
 
 - [Ruth](./wbot-ruth/README.md) — sensor Synoptic + TGFTP
