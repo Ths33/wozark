@@ -54,7 +54,7 @@ cd wbot-marty && npm install && npm run dev
 cd wbot-jonah && pip install -r requirements.txt && python -m src.main
 ```
 
-Variáveis de ambiente em cada projeto (ver respectivo README).
+Variáveis de ambiente e comandos completos estão consolidados em `docs/README.md`.
 
 ## Deploy
 
@@ -62,15 +62,4 @@ CapRover git push para `main` em cada repo. Auto-deploy. Cada serviço é indepe
 
 ## Documentação operacional
 
-Catálogo consolidado do projeto:
-
-- [Project Catalog](./docs/project-catalog.md) — sumário ponta a ponta, mapa de pastas, aprendizados e docs obsoletos
-
-Detalhes técnicos por projeto:
-
-- [Ruth](./wbot-ruth/README.md) — sensor Synoptic + TGFTP
-- [Wendy](./wbot-wendy/README.md) — trading brain + CLOB
-- [Marty](./wbot-marty/README.md) — dashboard real-time
-- [Jonah](./wbot-jonah/README.md) — learning analyst (currently learning-only)
-
-Conventions de orquestração entre serviços e regras de trading: ver [CLAUDE.md](./CLAUDE.md) raiz.
+A documentação canônica e autocontida está em [docs/README.md](./docs/README.md).
